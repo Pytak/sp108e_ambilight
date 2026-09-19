@@ -54,7 +54,6 @@ _gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                              ctypes.c_void_p, wintypes.UINT]
 
 _SRCCOPY = 0x00CC0020
-_CAPTUREBLT = 0x40000000
 _HALFTONE = 4
 
 
@@ -104,7 +103,7 @@ class GdiGrabber:
         r = self.region
         ok = _gdi32.StretchBlt(self.mem, 0, 0, self.width, 1, self.src,
                                r["left"], r["top"], r["width"], r["height"],
-                               _SRCCOPY | _CAPTUREBLT)
+                               _SRCCOPY)
         if not ok:
             raise RuntimeError("StretchBlt failed.")
         lines = _gdi32.GetDIBits(self.mem, self.bmp, 0, 1, self.buf,
