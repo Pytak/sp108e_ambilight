@@ -16,7 +16,7 @@ from tkinter import ttk, messagebox
 
 from ambilight.capture import list_monitors
 from ambilight.config import Config, FILL_MODES, config_path
-from ambilight.protocol import FRAME_PIXELS, read_brightness, write_brightness
+from ambilight.protocol import FRAME_PIXELS, read_settings, write_settings
 from ambilight.streamer import Streamer
 
 POLL_MS = 250
@@ -59,12 +59,13 @@ class App(tk.Tk):
         self.streamer = None
         self.inputs = []
         self._results = queue.Queue()
-        self._brightness_busy = False
+        self._controller_busy = False
+        self._device = None
         self._build()
         self._show(self.cfg)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(POLL_MS, self._poll)
-        self.after(200, lambda: self._read_brightness(silent=True))
+        self.after(200, lambda: self._read_controller(silent=True))
 
     # ---- layout ---------------------------------------------------------
 
@@ -85,7 +86,60 @@ class App(tk.Tk):
         self._entry(conn, 0, "IP address", self.v_ip)
         self._spin(conn, 1, "Port", self.v_port, 1, 65535, 1)
 
-        strip = self._section(root, "Strip", 1)
+        ctl = self._section(root, "Controller Settings", 1)
+        self._syncing = False
+        self.v_seg_pixels = tk.StringVar()
+        self.v_segments = tk.StringVar()
+        self.v_bright = tk.DoubleVar(value=0)
+        self.v_bright_text = tk.StringVar()
+
+        counts = ttk.Frame(ctl)
+        counts.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(counts, text="Pixels per segment").grid(row=0, column=0,
+                                                          sticky="w", **PAD)
+        self.ent_seg_pixels = ttk.Spinbox(counts, from_=1, to=300, increment=1,
+                                          width=6,
+                                          textvariable=self.v_seg_pixels)
+        self.ent_seg_pixels.grid(row=0, column=1, **PAD)
+        ttk.Label(counts, text="Segments").grid(row=0, column=2, sticky="w",
+                                                **PAD)
+        self.ent_segments = ttk.Spinbox(counts, from_=1, to=10, increment=1,
+                                        width=4, textvariable=self.v_segments)
+        self.ent_segments.grid(row=0, column=3, **PAD)
+        counts.columnconfigure(4, weight=1)
+        self.btn_read_counts = ttk.Button(counts, text="Read", width=6,
+                                          command=self._read_controller)
+        self.btn_read_counts.grid(row=0, column=5, **PAD)
+        self.btn_set_counts = ttk.Button(counts, text="Set", width=6,
+                                         command=self._set_counts)
+        self.btn_set_counts.grid(row=0, column=6, **PAD)
+
+        bright = ttk.Frame(ctl)
+        bright.grid(row=1, column=0, columnspan=2, sticky="ew")
+        ttk.Label(bright, text="Brightness").grid(row=0, column=0, sticky="w",
+                                                  **PAD)
+        self.scale = ttk.Scale(bright, from_=0, to=255, orient="horizontal",
+                               variable=self.v_bright,
+                               command=self._on_slider_move)
+        self.scale.grid(row=0, column=1, sticky="ew", **PAD)
+        self.ent_bright = ttk.Spinbox(bright, from_=0, to=255, increment=1,
+                                      width=5, textvariable=self.v_bright_text)
+        self.ent_bright.grid(row=0, column=2, **PAD)
+        self.v_bright_text.trace_add("write", self._on_text_change)
+        bright.columnconfigure(1, weight=1)
+        self.btn_read = ttk.Button(bright, text="Read", width=6,
+                                   command=self._read_controller)
+        self.btn_read.grid(row=0, column=3, **PAD)
+        self.btn_set = ttk.Button(bright, text="Set", width=6,
+                                  command=self._set_brightness)
+        self.btn_set.grid(row=0, column=4, **PAD)
+
+        self.controller_controls = [
+            self.ent_seg_pixels, self.ent_segments,
+            self.btn_read_counts, self.btn_set_counts,
+            self.scale, self.ent_bright, self.btn_read, self.btn_set]
+
+        strip = self._section(root, "Strip", 2)
         self._spin(strip, 0, "Pixel count", self.v_pixels,
                    1, FRAME_PIXELS, 1)
         self._check(strip, 1, "Mirror strip (LEDs run right to left)",
@@ -96,7 +150,7 @@ class App(tk.Tk):
         self._row(strip, 2, "Fill the rest of the strip with", self.cb_fill)
         self.inputs.append((self.cb_fill, "readonly"))
 
-        cap = self._section(root, "Capture", 2)
+        cap = self._section(root, "Capture", 3)
         self.cb_monitor = ttk.Combobox(
             cap, state="readonly", width=36,
             values=[monitor_label(i, m) for i, m in enumerate(self.monitors)])
@@ -105,34 +159,11 @@ class App(tk.Tk):
         self._spin(cap, 1, "Band height (% of screen)", self.v_band, 1, 100, 1)
         self._spin(cap, 2, "Target FPS", self.v_fps, 1, 240, 1)
 
-        smooth = self._section(root, "Smoothing", 3)
+        smooth = self._section(root, "Smoothing", 4)
         self._spin(smooth, 0, "Blur radius (LEDs, 0 to disable)",
                    self.v_radius, 0, 100, 0.5)
         self._spin(smooth, 1, "Temporal alpha (1.0 to disable)",
                    self.v_alpha, 0.01, 1.0, 0.05)
-
-        bright = self._section(root, "Controller Brightness", 4)
-        self._syncing = False
-        self.v_bright = tk.DoubleVar(value=0)
-        self.v_bright_text = tk.StringVar()
-        self.scale = ttk.Scale(bright, from_=0, to=255, orient="horizontal",
-                               variable=self.v_bright,
-                               command=self._on_slider_move)
-        self.scale.grid(row=0, column=0, sticky="ew", **PAD)
-        self.ent_bright = ttk.Spinbox(bright, from_=0, to=255, increment=1,
-                                      width=5, textvariable=self.v_bright_text)
-        self.ent_bright.grid(row=0, column=1, **PAD)
-        self.v_bright_text.trace_add("write", self._on_text_change)
-        self.btn_read = ttk.Button(bright, text="Read", width=6,
-                                   command=self._read_brightness)
-        self.btn_read.grid(row=0, column=2, **PAD)
-        self.btn_set = ttk.Button(bright, text="Set", width=6,
-                                  command=self._set_brightness)
-        self.btn_set.grid(row=0, column=3, **PAD)
-        bright.columnconfigure(0, weight=1)
-        bright.columnconfigure(1, weight=0)
-        self.brightness_controls = [self.scale, self.ent_bright,
-                                    self.btn_read, self.btn_set]
 
         bottom = ttk.Frame(root)
         bottom.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -242,7 +273,7 @@ class App(tk.Tk):
                 "Settings not saved",
                 f"Cannot write {self.config_path}\n\n{e}")
 
-    # ---- brightness ----------------------------------------------------
+    # ---- controller settings -------------------------------------------
 
     def _show_brightness(self, value):
         self._syncing = True
@@ -251,6 +282,12 @@ class App(tk.Tk):
             self.v_bright_text.set(str(int(value)))
         finally:
             self._syncing = False
+
+    def _show_device(self, status):
+        self._device = status
+        self.v_seg_pixels.set(str(status["pixels_per_segment"]))
+        self.v_segments.set(str(status["segments"]))
+        self._show_brightness(status["brightness"])
 
     def _on_slider_move(self, value):
         if not self._syncing:
@@ -267,15 +304,16 @@ class App(tk.Tk):
             finally:
                 self._syncing = False
 
-    def _brightness_value(self):
-        text = self.v_bright_text.get().strip()
-        if not text.isdigit() or not 0 <= int(text) <= 255:
-            raise ValueError("Brightness must be a whole number from 0 to 255.")
+    @staticmethod
+    def _int_field(var, lo, hi, name):
+        text = var.get().strip()
+        if not text.isdigit() or not lo <= int(text) <= hi:
+            raise ValueError(f"{name} must be a whole number from {lo} to {hi}.")
         return int(text)
 
-    def _set_brightness_controls(self, enabled):
+    def _set_controller_controls(self, enabled):
         state = "normal" if enabled else "disabled"
-        for widget in self.brightness_controls:
+        for widget in self.controller_controls:
             widget.configure(state=state)
 
     def _connection_fields(self):
@@ -288,39 +326,64 @@ class App(tk.Tk):
             raise ValueError("Enter a valid IP address and port first.")
         return Config(controller_ip=ip, controller_port=port)
 
-    def _read_brightness(self, silent=False):
+    def _read_controller(self, silent=False):
         try:
             cfg = self._connection_fields()
         except ValueError as e:
             if not silent:
-                messagebox.showerror("Brightness", str(e))
+                messagebox.showerror("Controller settings", str(e))
             return
-        self._run_brightness_job(lambda: read_brightness(cfg),
-                                 "Reading brightness", "Brightness read failed")
+        self._run_controller_job(lambda: read_settings(cfg),
+                                 "Reading controller settings",
+                                 "Controller read failed")
+
+    def _set_counts(self):
+        try:
+            cfg = self._connection_fields()
+            pixels = self._int_field(self.v_seg_pixels, 1, 300,
+                                     "Pixels per segment")
+            segments = self._int_field(self.v_segments, 1, 10, "Segments")
+        except ValueError as e:
+            messagebox.showerror("Controller settings", str(e))
+            return
+        changes = {}
+        if self._device is None or pixels != self._device["pixels_per_segment"]:
+            changes["pixels_per_segment"] = pixels
+        if self._device is None or segments != self._device["segments"]:
+            changes["segments"] = segments
+        if not changes:
+            self.v_status.set("Pixels and segments unchanged")
+            return
+        self._run_controller_job(lambda: write_settings(cfg, **changes),
+                                 "Setting pixels and segments",
+                                 "Controller set failed")
 
     def _set_brightness(self):
         try:
             cfg = self._connection_fields()
-            value = self._brightness_value()
+            value = self._int_field(self.v_bright_text, 0, 255, "Brightness")
         except ValueError as e:
-            messagebox.showerror("Brightness", str(e))
+            messagebox.showerror("Controller settings", str(e))
             return
-        self._run_brightness_job(lambda: write_brightness(cfg, value),
-                                 "Setting brightness", "Brightness set failed")
+        if self._device is not None and value == self._device["brightness"]:
+            self.v_status.set("Brightness unchanged")
+            return
+        self._run_controller_job(lambda: write_settings(cfg, brightness=value),
+                                 "Setting brightness", "Controller set failed")
 
-    def _run_brightness_job(self, job, busy_text, error_prefix):
-        if self._brightness_busy:
+    def _run_controller_job(self, job, busy_text, error_prefix):
+        if self._controller_busy:
             return
         if self.streamer is not None and self.streamer.is_alive():
             return
-        self._brightness_busy = True
-        self._set_brightness_controls(False)
+        self._controller_busy = True
+        self._set_controller_controls(False)
         self.lbl_status.configure(foreground="")
         self.v_status.set(busy_text)
 
         def worker():
             try:
-                self._results.put(("brightness", job()))
+                self._results.put(("device", job()))
             except Exception as e:
                 self._results.put(("error", f"{error_prefix}: {e}"))
 
@@ -332,16 +395,16 @@ class App(tk.Tk):
                 kind, payload = self._results.get_nowait()
             except queue.Empty:
                 break
-            self._brightness_busy = False
-            if kind == "brightness":
-                self._show_brightness(payload)
+            self._controller_busy = False
+            if kind == "device":
+                self._show_device(payload)
                 self.lbl_status.configure(foreground="")
                 self.v_status.set("Stopped")
             else:
                 self.lbl_status.configure(foreground="red")
                 self.v_status.set(payload)
             streaming = self.streamer is not None and self.streamer.is_alive()
-            self._set_brightness_controls(not streaming)
+            self._set_controller_controls(not streaming)
 
     # ---- start / stop --------------------------------------------------
 
@@ -350,9 +413,10 @@ class App(tk.Tk):
             self.streamer.stop()
             self.v_status.set("Stopping")
             return
-        if self._brightness_busy:
+        if self._controller_busy:
             messagebox.showinfo(
-                "Brightness", "Wait for the brightness operation to finish.")
+                "Controller settings",
+                "Wait for the controller operation to finish.")
             return
         try:
             cfg = self._read()
@@ -365,7 +429,7 @@ class App(tk.Tk):
         self.streamer = Streamer(cfg)
         self.streamer.start()
         self._set_inputs(False)
-        self._set_brightness_controls(False)
+        self._set_controller_controls(False)
         self.btn.configure(text="Stop")
 
     def _poll(self):
@@ -378,8 +442,8 @@ class App(tk.Tk):
             else:
                 self.streamer = None
                 self._set_inputs(True)
-                if not self._brightness_busy:
-                    self._set_brightness_controls(True)
+                if not self._controller_busy:
+                    self._set_controller_controls(True)
                 self.btn.configure(text="Start")
                 self.v_meter.set("0.0 FPS")
                 if streamer.error:

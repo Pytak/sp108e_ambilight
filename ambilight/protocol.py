@@ -1,8 +1,11 @@
 """SP108E wire protocol: packets, status, brightness and preview frames.
 
 Each command is a 6-byte packet: 0x38, three data bytes, the command,
-0x83. 16-bit values are big-endian. The controller ignores a 5-byte
-packet without an error.
+0x83. A 16-bit value in a command is little-endian (low byte first); the
+same values in the status reply are big-endian. The controller ignores a
+5-byte packet without an error. A value outside the range the firmware
+accepts makes it reset pixels per segment and segments to defaults (60
+and 10 on the firmware seen here).
 
 Never send a command other than a preview frame while a preview stream
 runs. The controller leaves the preview mode and the strip goes erratic.
@@ -16,6 +19,8 @@ CMD_FRAME_END      = 0x83
 CMD_GET_STATUS     = 0x10
 CMD_CUSTOM_PREVIEW = 0x24
 CMD_SET_BRIGHTNESS = 0x2A
+CMD_SET_DOT_COUNT  = 0x2D
+CMD_SET_SEGMENTS   = 0x2E
 PREVIEW_FRAME_SIZE = 900
 FRAME_PIXELS = PREVIEW_FRAME_SIZE // 3
 STATUS_SIZE = 17
@@ -78,6 +83,30 @@ def set_brightness(sock, value):
     sock.sendall(make_packet(CMD_SET_BRIGHTNESS, data))
 
 
+def _u16_packet(cmd, value):
+    """16-bit value, low byte first. The status reply uses the opposite order."""
+    value = max(0, min(0xFFFF, int(value)))
+    return make_packet(cmd, bytes([value & 0xFF, value >> 8, 0x00]))
+
+
+def drain(sock, timeout=0.3):
+    """Discard any bytes the controller sent that nobody asked for."""
+    sock.settimeout(timeout)
+    try:
+        while sock.recv(64):
+            pass
+    except (socket.timeout, OSError):
+        pass
+
+
+def set_dot_count(sock, pixels_per_segment):
+    sock.sendall(_u16_packet(CMD_SET_DOT_COUNT, pixels_per_segment))
+
+
+def set_segments(sock, segments):
+    sock.sendall(_u16_packet(CMD_SET_SEGMENTS, segments))
+
+
 def enter_preview(sock):
     sock.sendall(make_packet(CMD_CUSTOM_PREVIEW))
     return read_ack(sock)
@@ -97,8 +126,8 @@ def connect(cfg, timeout=5.0):
     return sock
 
 
-def read_brightness(cfg):
-    """Open a short connection and return the brightness stored in the controller."""
+def read_settings(cfg):
+    """Open a short connection and return the status dict of the controller."""
     sock = connect(cfg)
     try:
         status = get_status(sock)
@@ -106,24 +135,35 @@ def read_brightness(cfg):
         sock.close()
     if status is None:
         raise RuntimeError("Status read failed.")
-    return status["brightness"]
+    return status
 
 
-def write_brightness(cfg, value):
-    """Open a short connection, set the brightness and return the value read back.
+def write_settings(cfg, pixels_per_segment=None, segments=None,
+                   brightness=None):
+    """Open a short connection, send the given values, return the status read back.
 
-    Never call this while a stream runs.
+    Each value is one write to the flash memory of the controller. Send
+    only values that differ from the current status. Never call this while
+    a stream runs.
     """
     sock = connect(cfg)
     try:
-        set_brightness(sock, value)
-        time.sleep(0.2)
+        if pixels_per_segment is not None:
+            set_dot_count(sock, pixels_per_segment)
+            time.sleep(0.3)
+        if segments is not None:
+            set_segments(sock, segments)
+            time.sleep(0.3)
+        if brightness is not None:
+            set_brightness(sock, brightness)
+            time.sleep(0.2)
+        drain(sock)
         status = get_status(sock)
     finally:
         sock.close()
     if status is None:
-        return int(value)
-    return status["brightness"]
+        raise RuntimeError("Status read failed after the write.")
+    return status
 
 
 # ---- preview frames --------------------------------------------------------
