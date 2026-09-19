@@ -71,6 +71,19 @@ Notes:
 - Windows SmartScreen may show a warning for an unsigned executable. Choose **More info**, then **Run anyway**.
 - `icon.ico` is the icon of the executable and the window. To change it, edit and run `make_icon.py`, then build again.
 
+## Code layout
+
+| File | Content |
+| --- | --- |
+| `sp108e_ambilight_gui.py` | The desktop GUI, entry point of the exe |
+| `sp108e_ambilight.py` | The console version |
+| `ambilight/config.py` | The `Config` dataclass, its JSON file and its location |
+| `ambilight/protocol.py` | SP108E packets, status, brightness, preview frames |
+| `ambilight/capture.py` | Monitor list, band region, GDI grabber, capture thread |
+| `ambilight/streamer.py` | The stream thread that feeds the controller |
+| `make_icon.py` | Generator for `icon.ico`, run by hand only |
+| `build.bat` | PyInstaller build |
+
 ## Console version
 
 The same code will also run without the GUI:
@@ -88,13 +101,12 @@ On Start, the program will connect and enter the preview mode. It does not chang
 
 For every frame:
 
-1. Capture of a thin band of the screen in a background thread, with `mss`.
-2. Resize of the band to the pixel count with a box filter. The result for each LED is the exact average of its part of the screen.
-3. Optional mirror of the strip.
-4. Gaussian blur along the strip.
-5. Blend with the previous frame.
-6. Fill of the rest of the 900-byte frame, with repeats of the strip, mirrored repeats, or black.
-7. Transmission of the newest frame, then a wait for the one-byte acknowledgement from the controller.
+1. Capture of the screen band in a background thread with a GDI `StretchBlt` in HALFTONE mode. It averages the source pixels of each LED inside the copy, so the band is downscaled to the pixel count before it reaches Python. The result for each LED is the average of its part of the screen.
+2. Optional mirror of the strip.
+3. Gaussian blur along the strip.
+4. Blend with the previous frame.
+5. Fill of the rest of the 900-byte frame, with repeats of the strip, mirrored repeats, or black.
+6. Transmission of the newest frame, then a wait for the one-byte acknowledgement from the controller.
 
 Capture and transmission run in parallel. The slower of the two will limit the frame rate.
 

@@ -6,6 +6,7 @@ Start and stop the stream, edit all settings, and watch the frame rate.
 Settings are saved to sp108e_ambilight.json next to the program.
 """
 
+import ctypes
 import os
 import queue
 import sys
@@ -13,7 +14,10 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-import sp108e_ambilight as engine
+from ambilight.capture import list_monitors
+from ambilight.config import Config, FILL_MODES, config_path
+from ambilight.protocol import FRAME_PIXELS, read_brightness, write_brightness
+from ambilight.streamer import Streamer
 
 POLL_MS = 250
 PAD = {"padx": 6, "pady": 3}
@@ -22,12 +26,9 @@ FILL_LABELS = {"repeat": "repeats", "mirror": "mirrored repeats",
 
 
 def enable_dpi_awareness():
-    if sys.platform != "win32":
-        return
-    import ctypes
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
+    except (AttributeError, OSError):
         pass
 
 
@@ -52,9 +53,9 @@ class App(tk.Tk):
             self.iconbitmap(resource_path("icon.ico"))
         except tk.TclError:
             pass
-        self.config_path = engine.config_path()
-        self.cfg = engine.Config.load(self.config_path)
-        self.monitors = engine.list_monitors()
+        self.config_path = config_path()
+        self.cfg = Config.load(self.config_path)
+        self.monitors = list_monitors()
         self.streamer = None
         self.inputs = []
         self._results = queue.Queue()
@@ -86,12 +87,12 @@ class App(tk.Tk):
 
         strip = self._section(root, "Strip", 1)
         self._spin(strip, 0, "Pixel count", self.v_pixels,
-                   1, engine.FRAME_PIXELS, 1)
+                   1, FRAME_PIXELS, 1)
         self._check(strip, 1, "Mirror strip (LEDs run right to left)",
                     self.v_mirror)
         self.cb_fill = ttk.Combobox(
             strip, state="readonly", width=18,
-            values=[FILL_LABELS[m] for m in engine.FILL_MODES])
+            values=[FILL_LABELS[m] for m in FILL_MODES])
         self._row(strip, 2, "Fill the rest of the strip with", self.cb_fill)
         self.inputs.append((self.cb_fill, "readonly"))
 
@@ -194,13 +195,13 @@ class App(tk.Tk):
         self.v_radius.set(f"{cfg.smooth_radius:g}")
         self.v_alpha.set(f"{cfg.temporal_alpha:g}")
         self.v_mirror.set(cfg.mirror_strip)
-        self.cb_fill.current(engine.FILL_MODES.index(cfg.fill_mode))
+        self.cb_fill.current(FILL_MODES.index(cfg.fill_mode))
         index = cfg.monitor if 0 <= cfg.monitor < len(self.monitors) else 0
         self.cb_monitor.current(index)
 
     def _read(self):
         try:
-            cfg = engine.Config(
+            cfg = Config(
                 controller_ip=self.v_ip.get().strip(),
                 controller_port=int(self.v_port.get()),
                 pixel_count=int(self.v_pixels.get()),
@@ -210,7 +211,7 @@ class App(tk.Tk):
                 smooth_radius=float(self.v_radius.get()),
                 temporal_alpha=float(self.v_alpha.get()),
                 mirror_strip=self.v_mirror.get(),
-                fill_mode=engine.FILL_MODES[max(self.cb_fill.current(), 0)],
+                fill_mode=FILL_MODES[max(self.cb_fill.current(), 0)],
             )
         except ValueError:
             raise ValueError("One of the number fields is not valid.")
@@ -219,8 +220,8 @@ class App(tk.Tk):
             raise ValueError("Enter the IP address of the controller.")
         if not 1 <= cfg.controller_port <= 65535:
             raise ValueError("Port must be 1 to 65535.")
-        if not 1 <= cfg.pixel_count <= engine.FRAME_PIXELS:
-            raise ValueError(f"Pixel count must be 1 to {engine.FRAME_PIXELS}.")
+        if not 1 <= cfg.pixel_count <= FRAME_PIXELS:
+            raise ValueError(f"Pixel count must be 1 to {FRAME_PIXELS}.")
         if not 1 <= cfg.target_fps <= 240:
             raise ValueError("Target FPS must be 1 to 240.")
         if cfg.monitor < 0:
@@ -285,7 +286,7 @@ class App(tk.Tk):
             port = 0
         if not ip or not 1 <= port <= 65535:
             raise ValueError("Enter a valid IP address and port first.")
-        return engine.Config(controller_ip=ip, controller_port=port)
+        return Config(controller_ip=ip, controller_port=port)
 
     def _read_brightness(self, silent=False):
         try:
@@ -294,7 +295,7 @@ class App(tk.Tk):
             if not silent:
                 messagebox.showerror("Brightness", str(e))
             return
-        self._run_brightness_job(lambda: engine.read_brightness(cfg),
+        self._run_brightness_job(lambda: read_brightness(cfg),
                                  "Reading brightness", "Brightness read failed")
 
     def _set_brightness(self):
@@ -304,7 +305,7 @@ class App(tk.Tk):
         except ValueError as e:
             messagebox.showerror("Brightness", str(e))
             return
-        self._run_brightness_job(lambda: engine.write_brightness(cfg, value),
+        self._run_brightness_job(lambda: write_brightness(cfg, value),
                                  "Setting brightness", "Brightness set failed")
 
     def _run_brightness_job(self, job, busy_text, error_prefix):
@@ -361,7 +362,7 @@ class App(tk.Tk):
         self.cfg = cfg
         self._save(cfg)
         self.lbl_status.configure(foreground="")
-        self.streamer = engine.Streamer(cfg)
+        self.streamer = Streamer(cfg)
         self.streamer.start()
         self._set_inputs(False)
         self._set_brightness_controls(False)
