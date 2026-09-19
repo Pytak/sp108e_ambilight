@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-SP108E Ambilight, console version.
-
-Stream screen content to an SP108E LED controller. Run
-sp108e_ambilight_gui.py for the desktop GUI. Both read and write the same
-settings file, sp108e_ambilight.json, next to the program.
-"""
+"""SP108E Ambilight, console version. Same settings file as the GUI."""
 
 import os
 import sys

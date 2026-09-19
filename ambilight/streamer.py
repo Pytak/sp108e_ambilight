@@ -1,9 +1,5 @@
-"""The stream thread: connect, enter the preview mode, send frames, report fps.
-
-Capture runs in its own thread (FrameProducer), in parallel with the wait
-for the controller's per-frame acknowledgement. The slower of the two will
-limit the frame rate.
-"""
+"""Capture runs in its own thread, parallel to the wait for the
+controller's acknowledgement. The slower of the two sets the frame rate."""
 
 import queue
 import threading
@@ -14,11 +10,7 @@ from .protocol import connect, enter_preview, read_ack
 
 
 class Streamer(threading.Thread):
-    """Connect to the controller and stream frames until stop() is called.
-
-    Read `status`, `fps` and `error` from any thread. `error` is None on
-    a clean stop and a message on failure.
-    """
+    """status, fps and error are safe to read from other threads."""
 
     def __init__(self, cfg):
         super().__init__(daemon=True)
@@ -61,31 +53,32 @@ class Streamer(threading.Thread):
 
             interval = 1.0 / cfg.target_fps
             frame_count = 0
-            window_start = time.time()
+            window_start = time.perf_counter()
 
             while not self._stop.is_set():
-                loop_start = time.time()
+                loop_start = time.perf_counter()
 
                 try:
                     frame = producer.get(timeout=1.0)
                 except queue.Empty:
-                    raise RuntimeError("Screen capture stalled.")
+                    raise RuntimeError(producer.error or "Screen capture stalled.")
 
                 try:
                     sock.sendall(frame)
                 except OSError as e:
                     raise RuntimeError(f"Send error: {e}")
 
+                # The ack paces the stream; its value is irrelevant.
                 read_ack(sock, timeout=0.5)
                 frame_count += 1
 
-                now = time.time()
+                now = time.perf_counter()
                 if now - window_start >= 1.0:
                     self.fps = frame_count / (now - window_start)
                     frame_count = 0
                     window_start = now
 
-                elapsed = time.time() - loop_start
+                elapsed = time.perf_counter() - loop_start
                 if elapsed < interval:
                     time.sleep(interval - elapsed)
         finally:

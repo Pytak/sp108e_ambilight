@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-SP108E Ambilight desktop GUI.
-
-Start and stop the stream, edit all settings, and watch the frame rate.
-Settings are saved to sp108e_ambilight.json next to the program.
-"""
+"""SP108E Ambilight, desktop GUI."""
 
 import ctypes
 import os
@@ -33,6 +28,7 @@ def enable_dpi_awareness():
 
 
 def resource_path(name):
+    # PyInstaller unpacks bundled files to sys._MEIPASS.
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
@@ -64,8 +60,15 @@ class App(tk.Tk):
         self._build()
         self._show(self.cfg)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(POLL_MS, self._poll)
-        self.after(200, lambda: self._read_controller(silent=True))
+        self._timers = [
+            self.after(POLL_MS, self._poll),
+            self.after(200, lambda: self._read_controller(silent=True)),
+        ]
+
+    def destroy(self):
+        for timer in self._timers:
+            self.after_cancel(timer)
+        super().destroy()
 
     # ---- layout ---------------------------------------------------------
 
@@ -87,6 +90,7 @@ class App(tk.Tk):
         self._spin(conn, 1, "Port", self.v_port, 1, 65535, 1)
 
         ctl = self._section(root, "Controller Settings", 1)
+        # Guards the two-way sync between the brightness slider and box.
         self._syncing = False
         self.v_seg_pixels = tk.StringVar()
         self.v_segments = tk.StringVar()
@@ -451,7 +455,7 @@ class App(tk.Tk):
                     self.v_status.set(streamer.error)
                 else:
                     self.v_status.set("Stopped")
-        self.after(POLL_MS, self._poll)
+        self._timers[0] = self.after(POLL_MS, self._poll)
 
     def _on_close(self):
         if self.streamer is not None and self.streamer.is_alive():

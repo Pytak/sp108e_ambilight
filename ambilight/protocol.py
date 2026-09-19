@@ -1,14 +1,12 @@
-"""SP108E wire protocol: packets, status, brightness and preview frames.
+"""SP108E protocol.
 
-Each command is a 6-byte packet: 0x38, three data bytes, the command,
-0x83. A 16-bit value in a command is little-endian (low byte first); the
-same values in the status reply are big-endian. The controller ignores a
-5-byte packet without an error. A value outside the range the firmware
-accepts makes it reset pixels per segment and segments to defaults (60
-and 10 on the firmware seen here).
+A command is 6 bytes: 0x38, three data bytes, the command, 0x83. 16-bit
+values in commands are little-endian; in the status reply they are
+big-endian. A 5-byte packet is ignored without an error. An out-of-range
+value resets pixels per segment and segments to 60 and 10.
 
-Never send a command other than a preview frame while a preview stream
-runs. The controller leaves the preview mode and the strip goes erratic.
+During a preview stream, send frames only. Any other command ends the
+preview mode and the strip goes erratic.
 """
 
 import socket
@@ -54,7 +52,6 @@ def read_exact(sock, size, timeout=1.0):
 
 
 def get_status(sock):
-    """Return the controller status as a dict, or None on a bad reply."""
     sock.sendall(make_packet(CMD_GET_STATUS))
     try:
         resp = read_exact(sock, STATUS_SIZE)
@@ -84,13 +81,12 @@ def set_brightness(sock, value):
 
 
 def _u16_packet(cmd, value):
-    """16-bit value, low byte first. The status reply uses the opposite order."""
     value = max(0, min(0xFFFF, int(value)))
     return make_packet(cmd, bytes([value & 0xFF, value >> 8, 0x00]))
 
 
 def drain(sock, timeout=0.3):
-    """Discard any bytes the controller sent that nobody asked for."""
+    # Stray bytes would corrupt the next status read.
     sock.settimeout(timeout)
     try:
         while sock.recv(64):
@@ -127,7 +123,6 @@ def connect(cfg, timeout=5.0):
 
 
 def read_settings(cfg):
-    """Open a short connection and return the status dict of the controller."""
     sock = connect(cfg)
     try:
         status = get_status(sock)
@@ -140,12 +135,8 @@ def read_settings(cfg):
 
 def write_settings(cfg, pixels_per_segment=None, segments=None,
                    brightness=None):
-    """Open a short connection, send the given values, return the status read back.
-
-    Each value is one write to the flash memory of the controller. Send
-    only values that differ from the current status. Never call this while
-    a stream runs.
-    """
+    """Each value costs one flash write in the controller. Pass changed
+    values only. Call only while the stream is stopped."""
     sock = connect(cfg)
     try:
         if pixels_per_segment is not None:
@@ -169,10 +160,6 @@ def write_settings(cfg, pixels_per_segment=None, segments=None,
 # ---- preview frames --------------------------------------------------------
 
 def build_frame(rgb, fill_mode):
-    """Fill the frame with the strip, then repeats, mirrored repeats or black.
-
-    `rgb` is the raw RGB byte string of the strip, 3 bytes per pixel.
-    """
     data = bytes(rgb)
     pixels = bytearray(data)
     if data and fill_mode == "repeat":

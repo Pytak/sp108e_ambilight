@@ -1,5 +1,3 @@
-"""Screen capture: monitor list, band region, GDI grabber and the capture thread."""
-
 import ctypes
 import queue
 import threading
@@ -78,12 +76,8 @@ class _BITMAPINFO(ctypes.Structure):
 
 
 class GdiGrabber:
-    """Copy the band with GDI StretchBlt in HALFTONE mode.
-
-    HALFTONE averages the source pixels of each destination pixel, so the
-    downscale to width x 1 happens inside the copy and only width * 4
-    bytes cross into Python.
-    """
+    """HALFTONE makes GDI average the source pixels, so the downscale to
+    width x 1 happens inside the copy."""
 
     def __init__(self, region, width):
         self.region = region
@@ -121,6 +115,7 @@ class GdiGrabber:
                                "raw", "BGRX")
 
     def close(self):
+        # Also called from a half-finished __init__.
         if getattr(self, "bmp", None):
             _gdi32.DeleteObject(self.bmp)
         if getattr(self, "mem", None):
@@ -133,7 +128,6 @@ class GdiGrabber:
 # ---- processing ------------------------------------------------------------
 
 def sample_band(grabber, cfg, prev_img):
-    """Grab the band as width x 1, mirror, blur, blend with the last frame."""
     img = grabber.grab()
     if cfg.mirror_strip:
         img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
@@ -145,12 +139,13 @@ def sample_band(grabber, cfg, prev_img):
 
 
 class FrameProducer(threading.Thread):
-    """Capture frames continuously and publish the most recent one."""
+    """Keeps only the newest frame."""
 
     def __init__(self, monitor, cfg):
         super().__init__(daemon=True)
         self.monitor = monitor
         self.cfg = cfg
+        self.error = None
         self._lock = threading.Lock()
         self._frame = None
         self._ready = threading.Event()
@@ -160,7 +155,11 @@ class FrameProducer(threading.Thread):
         cfg = self.cfg
         region = make_band_region(self.monitor, cfg.band_fraction)
         prev_img = None
-        grabber = GdiGrabber(region, cfg.pixel_count)
+        try:
+            grabber = GdiGrabber(region, cfg.pixel_count)
+        except Exception as e:
+            self.error = f"Screen capture failed: {e}"
+            return
         try:
             while not self.stop_event.is_set():
                 try:
@@ -168,6 +167,7 @@ class FrameProducer(threading.Thread):
                     prev_img = img
                     frame = build_frame(img.tobytes(), cfg.fill_mode)
                 except Exception:
+                    # will fall on a lock screen or during a mode switch.
                     time.sleep(0.01)
                     continue
                 with self._lock:
