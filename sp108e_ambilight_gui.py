@@ -7,7 +7,9 @@ Settings are saved to sp108e_ambilight.json next to the program.
 """
 
 import os
+import queue
 import sys
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -55,10 +57,13 @@ class App(tk.Tk):
         self.monitors = engine.list_monitors()
         self.streamer = None
         self.inputs = []
+        self._results = queue.Queue()
+        self._brightness_busy = False
         self._build()
         self._show(self.cfg)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(POLL_MS, self._poll)
+        self.after(200, lambda: self._read_brightness(silent=True))
 
     # ---- layout ---------------------------------------------------------
 
@@ -105,8 +110,31 @@ class App(tk.Tk):
         self._spin(smooth, 1, "Temporal alpha (1.0 to disable)",
                    self.v_alpha, 0.01, 1.0, 0.05)
 
+        bright = self._section(root, "Controller Brightness", 4)
+        self._syncing = False
+        self.v_bright = tk.DoubleVar(value=0)
+        self.v_bright_text = tk.StringVar()
+        self.scale = ttk.Scale(bright, from_=0, to=255, orient="horizontal",
+                               variable=self.v_bright,
+                               command=self._on_slider_move)
+        self.scale.grid(row=0, column=0, sticky="ew", **PAD)
+        self.ent_bright = ttk.Spinbox(bright, from_=0, to=255, increment=1,
+                                      width=5, textvariable=self.v_bright_text)
+        self.ent_bright.grid(row=0, column=1, **PAD)
+        self.v_bright_text.trace_add("write", self._on_text_change)
+        self.btn_read = ttk.Button(bright, text="Read", width=6,
+                                   command=self._read_brightness)
+        self.btn_read.grid(row=0, column=2, **PAD)
+        self.btn_set = ttk.Button(bright, text="Set", width=6,
+                                  command=self._set_brightness)
+        self.btn_set.grid(row=0, column=3, **PAD)
+        bright.columnconfigure(0, weight=1)
+        bright.columnconfigure(1, weight=0)
+        self.brightness_controls = [self.scale, self.ent_bright,
+                                    self.btn_read, self.btn_set]
+
         bottom = ttk.Frame(root)
-        bottom.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        bottom.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         bottom.columnconfigure(1, weight=1)
 
         self.btn = ttk.Button(bottom, text="Start", width=12,
@@ -213,12 +241,117 @@ class App(tk.Tk):
                 "Settings not saved",
                 f"Cannot write {self.config_path}\n\n{e}")
 
+    # ---- brightness ----------------------------------------------------
+
+    def _show_brightness(self, value):
+        self._syncing = True
+        try:
+            self.v_bright.set(int(value))
+            self.v_bright_text.set(str(int(value)))
+        finally:
+            self._syncing = False
+
+    def _on_slider_move(self, value):
+        if not self._syncing:
+            self._show_brightness(int(float(value)))
+
+    def _on_text_change(self, *_):
+        if self._syncing:
+            return
+        text = self.v_bright_text.get().strip()
+        if text.isdigit() and 0 <= int(text) <= 255:
+            self._syncing = True
+            try:
+                self.v_bright.set(int(text))
+            finally:
+                self._syncing = False
+
+    def _brightness_value(self):
+        text = self.v_bright_text.get().strip()
+        if not text.isdigit() or not 0 <= int(text) <= 255:
+            raise ValueError("Brightness must be a whole number from 0 to 255.")
+        return int(text)
+
+    def _set_brightness_controls(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for widget in self.brightness_controls:
+            widget.configure(state=state)
+
+    def _connection_fields(self):
+        ip = self.v_ip.get().strip()
+        try:
+            port = int(self.v_port.get())
+        except ValueError:
+            port = 0
+        if not ip or not 1 <= port <= 65535:
+            raise ValueError("Enter a valid IP address and port first.")
+        return engine.Config(controller_ip=ip, controller_port=port)
+
+    def _read_brightness(self, silent=False):
+        try:
+            cfg = self._connection_fields()
+        except ValueError as e:
+            if not silent:
+                messagebox.showerror("Brightness", str(e))
+            return
+        self._run_brightness_job(lambda: engine.read_brightness(cfg),
+                                 "Reading brightness", "Brightness read failed")
+
+    def _set_brightness(self):
+        try:
+            cfg = self._connection_fields()
+            value = self._brightness_value()
+        except ValueError as e:
+            messagebox.showerror("Brightness", str(e))
+            return
+        self._run_brightness_job(lambda: engine.write_brightness(cfg, value),
+                                 "Setting brightness", "Brightness set failed")
+
+    def _run_brightness_job(self, job, busy_text, error_prefix):
+        if self._brightness_busy:
+            return
+        if self.streamer is not None and self.streamer.is_alive():
+            return
+        self._brightness_busy = True
+        self._set_brightness_controls(False)
+        self.lbl_status.configure(foreground="")
+        self.v_status.set(busy_text)
+
+        def worker():
+            try:
+                self._results.put(("brightness", job()))
+            except Exception as e:
+                self._results.put(("error", f"{error_prefix}: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _drain_results(self):
+        while True:
+            try:
+                kind, payload = self._results.get_nowait()
+            except queue.Empty:
+                break
+            self._brightness_busy = False
+            if kind == "brightness":
+                self._show_brightness(payload)
+                self.lbl_status.configure(foreground="")
+                self.v_status.set("Stopped")
+            else:
+                self.lbl_status.configure(foreground="red")
+                self.v_status.set(payload)
+            streaming = self.streamer is not None and self.streamer.is_alive()
+            self._set_brightness_controls(not streaming)
+
     # ---- start / stop --------------------------------------------------
 
     def _toggle(self):
         if self.streamer is not None and self.streamer.is_alive():
             self.streamer.stop()
             self.v_status.set("Stopping")
+            return
+        if self._brightness_busy:
+            messagebox.showinfo(
+                "Brightness", "Wait for the brightness operation to finish.")
             return
         try:
             cfg = self._read()
@@ -231,9 +364,11 @@ class App(tk.Tk):
         self.streamer = engine.Streamer(cfg)
         self.streamer.start()
         self._set_inputs(False)
+        self._set_brightness_controls(False)
         self.btn.configure(text="Stop")
 
     def _poll(self):
+        self._drain_results()
         streamer = self.streamer
         if streamer is not None:
             if streamer.is_alive():
@@ -242,6 +377,8 @@ class App(tk.Tk):
             else:
                 self.streamer = None
                 self._set_inputs(True)
+                if not self._brightness_busy:
+                    self._set_brightness_controls(True)
                 self.btn.configure(text="Start")
                 self.v_meter.set("0.0 FPS")
                 if streamer.error:

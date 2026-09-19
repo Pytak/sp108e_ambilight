@@ -21,7 +21,7 @@ The program will take a thin horizontal band from the middle of the screen, map 
 
 The strip will show the screen colours immediately, and the meter at the bottom will show the frame rate. Click **Stop** to end the stream. The controller will go back to its previous mode.
 
-The program will save all settings to `sp108e_ambilight.json` in its own folder, on **Start** and on close. Settings are locked while the stream runs. Click **Stop** to change them.
+The program will save all settings to `sp108e_ambilight.json` in its own folder, on **Start** and on close. Settings are locked during a stream. Click **Stop** to change them.
 
 ## Settings
 
@@ -29,7 +29,7 @@ The program will save all settings to `sp108e_ambilight.json` in its own folder,
 | --- | --- | --- | --- |
 | IP address | `controller_ip` | `192.168.1.235` | IP address of the SP108E |
 | Port | `controller_port` | `8189` | TCP port. Change it only for a firmware with a different port. |
-| Pixel count | `pixel_count` | `175` | Number of LEDs in the frame. Maximum 300. |
+| Pixel count | `pixel_count` | `175` | Number of LEDs, from the start of the strip, that will show the screen band. The LEDs after them will show the fill (see below). Maximum 300. This value is independent of the pixel and segment counts in the phone app. |
 | Mirror strip | `mirror_strip` | `true` | Set on for LEDs that run right-to-left relative to the screen. |
 | Fill the rest of the strip with | `fill_mode` | `mirror` | Content for the LEDs beyond the pixel count, up to 300. `repeat`: repeats of the strip. `mirror`: mirrored repeats, forward then reversed. `none`: black. |
 | Monitor | `monitor` | `0` | Screen to capture. `0` is all monitors combined into one wide virtual desktop. `1`, `2`, ... is one physical monitor. |
@@ -47,6 +47,14 @@ Use **Blur radius** to blur the colours along the strip with a Gaussian falloff.
 Use **Temporal alpha** to blend each new frame with the previous one. A lower value will give slower colour changes and less flicker. A higher value will make the strip react faster to scene cuts. At `0.1` the strip will need about 20 frames to reach a new colour. At `0.5`, about 3.
 
 The two settings do not interact. Adjust one at a time.
+
+### Brightness
+
+The slider and the number box show the brightness stored in the controller, `0` to `255`. The program will read it when it starts. Click **Read** to read it again, for example after a change in the phone app. Move the slider or type a number, then click **Set** to send the new value. The controller will save it, so it stays after the program stops, and the phone app will show the same value. Brightness is not part of the settings file.
+
+The slider, the number box and the two buttons are inactive during a stream. A brightness command will make the controller leave the preview mode, so the program will never send one during a stream. Stop the stream, set the brightness, then start again.
+
+Each click on **Set** is one write to the flash memory of the controller, the same as a change in the phone app.
 
 ## Build
 
@@ -76,6 +84,10 @@ It will read the same `sp108e_ambilight.json`, create it with default values if 
 
 ## How it works
 
+On Start, the program will connect and enter the preview mode. It does not change the pixel count, the segments or any other setting stored in the controller. Configure those in the phone app.
+
+For every frame:
+
 1. Capture of a thin band of the screen in a background thread, with `mss`.
 2. Resize of the band to the pixel count with a box filter. The result for each LED is the exact average of its part of the screen.
 3. Optional mirror of the strip.
@@ -88,14 +100,15 @@ Capture and transmission run in parallel. The slower of the two will limit the f
 
 ## Protocol notes
 
-Two commands of the SP108E protocol are in use, over TCP port 8189:
+Three commands of the SP108E protocol are in use, over TCP port 8189. Each command is a 6-byte packet: `0x38`, three data bytes, the command byte, `0x83`. 16-bit values are big-endian.
 
-- `0x2D`: set the pixel count
-- `0x24`: enter the custom preview mode. After it, the controller will accept raw 900-byte RGB frames.
+- `0x10`: read the status. The reply has 17 bytes: on/off, mode, speed, brightness, colour order, pixels per segment, segments, colour, IC type, number of recorded patterns, white brightness.
+- `0x24`: enter the custom preview mode. After it, the controller will accept raw 900-byte RGB frames and will answer each frame with one byte, `0x31`.
+- `0x2A`: set the brightness, `0` to `255`, in the first data byte. No reply. Never send it during a preview stream: the controller will leave the preview mode and the strip output will become erratic. The program will send it only when the stream is stopped, over a separate short connection.
 
 When the connection closes, the controller will leave the preview mode and go back to its previous mode.
 
-**Warning.** The controller will save configuration changes, such as the pixel count, to flash memory. A malformed configuration packet can overwrite a saved value, and the change will survive a power cycle. If part of your strip is dark after a change to the protocol code, open the SP108E app and set the pixel count again.
+**Warning.** The controller will save configuration changes, such as the pixel count, to flash memory. A malformed configuration packet can overwrite a saved value, and the change will survive a power cycle. If part of your strip is dark after a change to the protocol code, open the SP108E app and set the pixel count again. The controller will ignore a 5-byte packet without an error, so a wrong packet length can look like a command that works.
 
 ## Troubleshooting
 
@@ -106,6 +119,8 @@ Errors appear in red in the status line at the bottom of the window.
 **Preview init failed**: Power-cycle the controller and try again. This error will also appear if another client, for example the phone app, has an open connection to the controller.
 
 **Part of the strip is dark**: The saved pixel count in the controller is lower than the LED count of your strip. Set it in the SP108E app.
+
+**Brightness shows n/a**: The read at program start failed, for example because the controller was off or the IP address was wrong. Correct the IP address and click **Read**. The stream does not depend on it.
 
 **Wrong colours**: Set the colour order (RGB, GRB, ...) in the SP108E app. The program output is always RGB.
 

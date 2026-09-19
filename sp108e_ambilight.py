@@ -36,10 +36,12 @@ CONFIG_FILENAME = "sp108e_ambilight.json"
 # ---- Protocol constants ----------------------------------------------------
 CMD_FRAME_START    = 0x38
 CMD_FRAME_END      = 0x83
+CMD_GET_STATUS     = 0x10
 CMD_CUSTOM_PREVIEW = 0x24
-CMD_DOT_COUNT      = 0x2D
+CMD_SET_BRIGHTNESS = 0x2A
 PREVIEW_FRAME_SIZE = 900
 FRAME_PIXELS = PREVIEW_FRAME_SIZE // 3
+STATUS_SIZE = 17
 ACK_BYTE = 0x31
 
 # How to fill the LEDs beyond pixel_count, up to FRAME_PIXELS.
@@ -123,7 +125,7 @@ def config_path():
 
 
 def list_monitors():
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         return list(sct.monitors)
 
 
@@ -144,11 +146,87 @@ def read_ack(sock, timeout=1.0):
         return False
 
 
-def set_dot_count(sock, count):
-    packet = bytes([CMD_FRAME_START, count & 0xFF, 0x00,
-                    CMD_DOT_COUNT, CMD_FRAME_END])
-    sock.sendall(packet)
-    time.sleep(0.3)
+def read_exact(sock, size, timeout=1.0):
+    sock.settimeout(timeout)
+    buf = b""
+    while len(buf) < size:
+        chunk = sock.recv(size - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def get_status(sock):
+    """Return the controller status as a dict, or None on a bad reply."""
+    sock.sendall(make_packet(CMD_GET_STATUS))
+    try:
+        resp = read_exact(sock, STATUS_SIZE)
+    except socket.timeout:
+        return None
+    if (len(resp) != STATUS_SIZE or resp[0] != CMD_FRAME_START
+            or resp[-1] != CMD_FRAME_END):
+        return None
+    return {
+        "on":                 resp[1] == 1,
+        "mode":               resp[2],
+        "speed":              resp[3],
+        "brightness":         resp[4],
+        "color_order":        resp[5],
+        "pixels_per_segment": int.from_bytes(resp[6:8], "big"),
+        "segments":           int.from_bytes(resp[8:10], "big"),
+        "color":              tuple(resp[10:13]),
+        "ic_type":            resp[13],
+        "recorded_patterns":  resp[14],
+        "white_brightness":   resp[15],
+    }
+
+
+def set_brightness(sock, value):
+    data = bytes([max(0, min(255, int(value))), 0x00, 0x00])
+    sock.sendall(make_packet(CMD_SET_BRIGHTNESS, data))
+
+
+def connect(cfg, timeout=5.0):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((cfg.controller_ip, cfg.controller_port))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError as e:
+        sock.close()
+        raise RuntimeError(f"Connection failed: {e}")
+    return sock
+
+
+def read_brightness(cfg):
+    """Open a short connection and return the brightness stored in the controller."""
+    sock = connect(cfg)
+    try:
+        status = get_status(sock)
+    finally:
+        sock.close()
+    if status is None:
+        raise RuntimeError("Status read failed.")
+    return status["brightness"]
+
+
+def write_brightness(cfg, value):
+    """Open a short connection, set the brightness and return the value read back.
+
+    Never call this while a stream runs: the controller leaves the preview
+    mode when it receives the brightness command.
+    """
+    sock = connect(cfg)
+    try:
+        set_brightness(sock, value)
+        time.sleep(0.2)
+        status = get_status(sock)
+    finally:
+        sock.close()
+    if status is None:
+        return int(value)
+    return status["brightness"]
 
 
 def enter_preview(sock):
@@ -224,7 +302,7 @@ class FrameProducer(threading.Thread):
         cfg = self.cfg
         region = make_band_region(self.monitor, cfg.band_fraction)
         prev_img = None
-        with mss.mss() as sct:
+        with mss.MSS() as sct:
             while not self.stop_event.is_set():
                 try:
                     img = sample_band(sct, region, cfg, prev_img)
@@ -287,18 +365,10 @@ class Streamer(threading.Thread):
             raise RuntimeError(f"Monitor {cfg.monitor} not found.")
 
         self.status = "Connecting"
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
-        try:
-            sock.connect((cfg.controller_ip, cfg.controller_port))
-        except OSError as e:
-            sock.close()
-            raise RuntimeError(f"Connection failed: {e}")
+        sock = connect(cfg)
 
         producer = None
         try:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            set_dot_count(sock, cfg.pixel_count)
             if not enter_preview(sock):
                 raise RuntimeError(
                     "Preview init failed. Power-cycle the controller and retry.")
