@@ -8,14 +8,20 @@ CMD_CUSTOM_PREVIEW protocol and 900-byte frames.
 Capture runs in a background thread, in parallel with the wait for the
 controller's per-frame acknowledgement. The slower of the two will limit
 the frame rate.
+
+Run this file directly for the console version. Run
+sp108e_ambilight_gui.py for the desktop GUI. Both read and write the same
+settings file, sp108e_ambilight.json, next to the program.
 """
 
-import socket
-import time
-import sys
-import signal
-import threading
+import json
+import os
 import queue
+import socket
+import sys
+import threading
+import time
+from dataclasses import dataclass, asdict, fields
 
 try:
     import mss
@@ -25,50 +31,7 @@ except ImportError:
     sys.exit(1)
 
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-# Controller network address.
-CONTROLLER_IP   = "192.168.1.235"
-CONTROLLER_PORT = 8189
-
-# Pixel count sent to the controller and used as the frame length.
-# 240 fills the strip fully on the triangles.
-PIXEL_COUNT = 175
-
-# Upper bound on frame rate; the controller's ack pacing usually caps lower.
-TARGET_FPS = 30
-
-# Screen to sample. Accepts three forms:
-#   None  -> all monitors combined (virtual desktop)
-#   1     -> first physical monitor
-#   2     -> second physical monitor, etc.
-#   {"top": 0, "left": 0, "width": 1920, "height": 1080}  -> explicit region
-# To discover which index maps to which monitor, run:
-#   python -c "import mss; [print(i, m) for i, m in enumerate(mss.mss().monitors)]"
-CAPTURE_MONITOR = None
-
-# Height of the sampled band, as a fraction of monitor height, centered
-# vertically. Larger = more vertical smoothing at slight capture cost.
-BAND_FRACTION = 0.03
-
-# Spatial smoothing: Gaussian blur radius along the strip, in LED units.
-# Each LED will blend with its neighbours, with smooth falloff weights.
-# 0 to disable. Larger = colours spread further along the strip.
-SMOOTH_RADIUS = 5
-
-# Temporal smoothing: weight of the new frame in the output (0..1).
-# 1.0 = no smoothing. Lower = slower colour changes, less flicker.
-TEMPORAL_ALPHA = 0.1
-
-# Set True to mirror the strip, if the LEDs run right-to-left
-# relative to the screen.
-MIRROR_STRIP = True
-
-# Set True to fill the rest of the 900-byte frame with mirrored repeats
-# of the strip. Set False to fill it with black.
-ENABLE_PINGPONG = True
+CONFIG_FILENAME = "sp108e_ambilight.json"
 
 # ---- Protocol constants ----------------------------------------------------
 CMD_FRAME_START    = 0x38
@@ -78,6 +41,90 @@ CMD_DOT_COUNT      = 0x2D
 PREVIEW_FRAME_SIZE = 900
 FRAME_PIXELS = PREVIEW_FRAME_SIZE // 3
 ACK_BYTE = 0x31
+
+# How to fill the LEDs beyond pixel_count, up to FRAME_PIXELS.
+FILL_MODES = ("repeat", "mirror", "none")
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+@dataclass
+class Config:
+    # Network address of the controller.
+    controller_ip: str = "192.168.1.235"
+    controller_port: int = 8189
+
+    # Number of LEDs in the frame. Maximum FRAME_PIXELS (300).
+    pixel_count: int = 175
+
+    # Upper limit for the frame rate. The acknowledgement pacing of the
+    # controller will usually limit it further.
+    target_fps: int = 30
+
+    # mss monitor index. 0 = all monitors combined, 1 = first monitor, ...
+    monitor: int = 0
+
+    # Height of the sampled band as a fraction of the screen height,
+    # centred vertically.
+    band_fraction: float = 0.03
+
+    # Spatial smoothing: Gaussian blur radius along the strip, in LEDs.
+    # Set 0 to disable.
+    smooth_radius: float = 5.0
+
+    # Temporal smoothing: weight of the new frame in the output (0..1).
+    # Set 1.0 to disable.
+    temporal_alpha: float = 0.1
+
+    # Set True for LEDs that run right-to-left relative to the screen.
+    mirror_strip: bool = True
+
+    # Fill for the rest of the 900-byte frame, one of FILL_MODES:
+    #   "repeat": repeats of the strip
+    #   "mirror": mirrored repeats of the strip (forward, reversed, ...)
+    #   "none":   black
+    fill_mode: str = "mirror"
+
+    @classmethod
+    def load(cls, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+        types = {f.name: f.type for f in fields(cls)}
+        clean = {}
+        for key, value in data.items():
+            if key in types:
+                try:
+                    clean[key] = types[key](value)
+                except (TypeError, ValueError):
+                    pass
+        if clean.get("fill_mode") not in FILL_MODES:
+            clean.pop("fill_mode", None)
+        return cls(**clean)
+
+    def save(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, indent=2)
+            f.write("\n")
+
+
+def config_path():
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, CONFIG_FILENAME)
+
+
+def list_monitors():
+    with mss.mss() as sct:
+        return list(sct.monitors)
 
 
 # ============================================================================
@@ -113,8 +160,8 @@ def enter_preview(sock):
 # SCREEN CAPTURE
 # ============================================================================
 
-def make_band_region(monitor):
-    band_h = max(1, int(monitor["height"] * BAND_FRACTION))
+def make_band_region(monitor, band_fraction):
+    band_h = max(1, int(monitor["height"] * band_fraction))
     top = monitor["top"] + (monitor["height"] - band_h) // 2
     return {
         "top":    top,
@@ -124,25 +171,28 @@ def make_band_region(monitor):
     }
 
 
-def sample_band(sct, region, target_n, prev_img):
+def sample_band(sct, region, cfg, prev_img):
     """Grab the band, average each LED's column, blur, blend with the last frame."""
     shot = sct.grab(region)
     img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    img = img.resize((target_n, 1), Image.Resampling.BOX)
-    if MIRROR_STRIP:
+    img = img.resize((cfg.pixel_count, 1), Image.Resampling.BOX)
+    if cfg.mirror_strip:
         img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    if SMOOTH_RADIUS > 0:
-        img = img.filter(ImageFilter.GaussianBlur(SMOOTH_RADIUS))
-    if prev_img is not None and TEMPORAL_ALPHA < 1.0:
-        img = Image.blend(prev_img, img, TEMPORAL_ALPHA)
+    if cfg.smooth_radius > 0:
+        img = img.filter(ImageFilter.GaussianBlur(cfg.smooth_radius))
+    if prev_img is not None and cfg.temporal_alpha < 1.0:
+        img = Image.blend(prev_img, img, cfg.temporal_alpha)
     return img
 
 
-def build_frame(colors):
-    """Fill the frame with the strip, then mirrored repeats of it or black."""
+def build_frame(colors, fill_mode):
+    """Fill the frame with the strip, then repeats, mirrored repeats or black."""
     colors = list(colors)
     pixels = list(colors)
-    if ENABLE_PINGPONG:
+    if fill_mode == "repeat":
+        while len(pixels) < FRAME_PIXELS:
+            pixels.extend(colors)
+    elif fill_mode == "mirror":
         forward = False
         while len(pixels) < FRAME_PIXELS:
             pixels.extend(colors if forward else reversed(colors))
@@ -161,24 +211,25 @@ def build_frame(colors):
 class FrameProducer(threading.Thread):
     """Capture frames continuously and publish the most recent one."""
 
-    def __init__(self, monitor, target_n):
+    def __init__(self, monitor, cfg):
         super().__init__(daemon=True)
         self.monitor = monitor
-        self.target_n = target_n
+        self.cfg = cfg
         self._lock = threading.Lock()
         self._frame = None
         self._ready = threading.Event()
         self.stop_event = threading.Event()
 
     def run(self):
-        region = make_band_region(self.monitor)
+        cfg = self.cfg
+        region = make_band_region(self.monitor, cfg.band_fraction)
         prev_img = None
-        with mss.MSS() as sct:
+        with mss.mss() as sct:
             while not self.stop_event.is_set():
                 try:
-                    img = sample_band(sct, region, self.target_n, prev_img)
+                    img = sample_band(sct, region, cfg, prev_img)
                     prev_img = img
-                    frame = build_frame(img.getdata())
+                    frame = build_frame(img.getdata(), cfg.fill_mode)
                 except Exception:
                     time.sleep(0.01)
                     continue
@@ -199,90 +250,134 @@ class FrameProducer(threading.Thread):
 
 
 # ============================================================================
-# MAIN
+# STREAMER
+# ============================================================================
+
+class Streamer(threading.Thread):
+    """Connect to the controller and stream frames until stop() is called.
+
+    Read `status`, `fps` and `error` from any thread. `error` is None on
+    a clean stop and a message on failure.
+    """
+
+    def __init__(self, cfg):
+        super().__init__(daemon=True)
+        self.cfg = cfg
+        self.status = "Starting"
+        self.fps = 0.0
+        self.error = None
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            self._run()
+        except Exception as e:
+            self.error = str(e)
+        finally:
+            self.status = "Stopped"
+            self.fps = 0.0
+
+    def _run(self):
+        cfg = self.cfg
+        monitors = list_monitors()
+        if not 0 <= cfg.monitor < len(monitors):
+            raise RuntimeError(f"Monitor {cfg.monitor} not found.")
+
+        self.status = "Connecting"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        try:
+            sock.connect((cfg.controller_ip, cfg.controller_port))
+        except OSError as e:
+            sock.close()
+            raise RuntimeError(f"Connection failed: {e}")
+
+        producer = None
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            set_dot_count(sock, cfg.pixel_count)
+            if not enter_preview(sock):
+                raise RuntimeError(
+                    "Preview init failed. Power-cycle the controller and retry.")
+
+            producer = FrameProducer(monitors[cfg.monitor], cfg)
+            producer.start()
+            self.status = "Streaming"
+
+            interval = 1.0 / cfg.target_fps
+            frame_count = 0
+            window_start = time.time()
+
+            while not self._stop.is_set():
+                loop_start = time.time()
+
+                try:
+                    frame = producer.get(timeout=1.0)
+                except queue.Empty:
+                    raise RuntimeError("Screen capture stalled.")
+
+                try:
+                    sock.sendall(frame)
+                except OSError as e:
+                    raise RuntimeError(f"Send error: {e}")
+
+                read_ack(sock, timeout=0.5)
+                frame_count += 1
+
+                now = time.time()
+                if now - window_start >= 1.0:
+                    self.fps = frame_count / (now - window_start)
+                    frame_count = 0
+                    window_start = now
+
+                elapsed = time.time() - loop_start
+                if elapsed < interval:
+                    time.sleep(interval - elapsed)
+        finally:
+            if producer is not None:
+                producer.stop()
+                producer.join(timeout=2)
+            sock.close()
+
+
+# ============================================================================
+# CONSOLE ENTRY POINT
 # ============================================================================
 
 def main():
-    print(f"SP108E Ambilight -> {CONTROLLER_IP}:{CONTROLLER_PORT}")
-    print(f"pixels={PIXEL_COUNT}  blur={SMOOTH_RADIUS}  "
-          f"alpha={TEMPORAL_ALPHA}  fps_cap={TARGET_FPS}  "
-          f"band={BAND_FRACTION*100:.1f}%")
+    path = config_path()
+    cfg = Config.load(path)
+    if not os.path.exists(path):
+        cfg.save(path)
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(5.0)
-    try:
-        sock.connect((CONTROLLER_IP, CONTROLLER_PORT))
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except Exception as e:
-        print(f"Connection failed: {e}")
-        sys.exit(1)
+    print(f"SP108E Ambilight -> {cfg.controller_ip}:{cfg.controller_port}")
+    print(f"Settings: {path}")
+    print(f"pixels={cfg.pixel_count}  blur={cfg.smooth_radius}  "
+          f"alpha={cfg.temporal_alpha}  fps_cap={cfg.target_fps}  "
+          f"band={cfg.band_fraction * 100:.1f}%  monitor={cfg.monitor}")
 
-    set_dot_count(sock, PIXEL_COUNT)
-
-    if not enter_preview(sock):
-        print("Preview init failed. Power-cycle the controller and retry.")
-        sock.close()
-        sys.exit(1)
-
-    with mss.MSS() as sct:
-        if CAPTURE_MONITOR is None:
-            monitor = sct.monitors[0]
-        elif isinstance(CAPTURE_MONITOR, int):
-            monitor = sct.monitors[CAPTURE_MONITOR]
-        else:
-            monitor = CAPTURE_MONITOR
-
-    region = make_band_region(monitor)
-    print(f"Band: {region['width']}x{region['height']} at y={region['top']}")
-
-    producer = FrameProducer(monitor, PIXEL_COUNT)
-    producer.start()
+    streamer = Streamer(cfg)
+    streamer.start()
     print("Streaming. Ctrl+C to stop.")
 
-    running = True
+    try:
+        ticks = 0
+        while streamer.is_alive():
+            time.sleep(1.0)
+            ticks += 1
+            if ticks % 5 == 0 and streamer.status == "Streaming":
+                print(f"[STATS] {streamer.fps:5.1f} FPS")
+    except KeyboardInterrupt:
+        pass
 
-    def stop(*_):
-        nonlocal running
-        running = False
-    signal.signal(signal.SIGINT, stop)
-
-    interval = 1.0 / TARGET_FPS
-    frame_count = 0
-    last_report = time.time()
-
-    while running:
-        loop_start = time.time()
-
-        try:
-            frame = producer.get(timeout=1.0)
-        except queue.Empty:
-            print("Producer stalled.")
-            break
-
-        try:
-            sock.sendall(frame)
-        except Exception as e:
-            print(f"Send error: {e}")
-            break
-
-        read_ack(sock, timeout=0.5)
-
-        frame_count += 1
-
-        now = time.time()
-        if now - last_report >= 5.0:
-            elapsed = now - last_report
-            fps = frame_count / elapsed
-            print(f"[STATS] {fps:5.1f} FPS")
-            frame_count = 0
-            last_report = now
-
-        elapsed = time.time() - loop_start
-        if elapsed < interval:
-            time.sleep(interval - elapsed)
-
-    producer.stop()
-    sock.close()
+    streamer.stop()
+    streamer.join(timeout=3)
+    if streamer.error:
+        print(streamer.error)
+        sys.exit(1)
     print("Done.")
 
 
