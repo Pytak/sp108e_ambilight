@@ -1,8 +1,24 @@
 import unittest
 
-from ambilight.capture import (FrameProducer, GdiGrabber, list_monitors,
-                               make_band_region)
+from PIL import Image
+
+from ambilight.capture import (FrameProducer, GdiGrabber, channel_lut,
+                               list_monitors, make_band_region)
 from ambilight.config import Config
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_identity_has_no_lut(self):
+        self.assertIsNone(channel_lut([255, 255, 255]))
+
+    def test_grey_is_scaled_per_channel(self):
+        lut = channel_lut([255, 158, 131])
+        img = Image.new("RGB", (2, 1), (128, 128, 128)).point(lut)
+        self.assertEqual(img.getpixel((0, 0)), (128, 79, 66))
+        white = Image.new("RGB", (1, 1), (255, 255, 255)).point(lut)
+        self.assertEqual(white.getpixel((0, 0)), (255, 158, 131))
+        black = Image.new("RGB", (1, 1), (0, 0, 0)).point(lut)
+        self.assertEqual(black.getpixel((0, 0)), (0, 0, 0))
 
 
 class BandRegionTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict, field, fields
 
 CONFIG_FILENAME = "sp108e_ambilight.json"
 FILL_MODES = ("repeat", "mirror", "none")
@@ -27,6 +27,8 @@ class Config:
     mirror_strip: bool = True
     # Fill after pixel_count: repeat, mirror or none (black).
     fill_mode: str = "mirror"
+    # Color calibration, JSON only: max output per channel (R, G, B).
+    channel_max: list = field(default_factory=lambda: [255, 255, 255])
 
     @classmethod
     def load(cls, path):
@@ -53,6 +55,10 @@ class Config:
                 pass
         if clean.get("fill_mode") not in FILL_MODES:
             clean.pop("fill_mode", None)
+        cm = clean.get("channel_max")
+        if cm is not None and not (
+                len(cm) == 3 and all(type(v) is int and 0 <= v <= 255 for v in cm)):
+            clean.pop("channel_max")
         return cls(**clean)
 
     def save(self, path):

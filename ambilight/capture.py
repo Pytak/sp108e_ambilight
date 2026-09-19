@@ -126,6 +126,12 @@ class GdiGrabber:
 
 # ---- processing ------------------------------------------------------------
 
+def channel_lut(channel_max):
+    if list(channel_max) == [255, 255, 255]:
+        return None
+    return [round(i * m / 255) for m in channel_max for i in range(256)]
+
+
 def sample_band(grabber, cfg, prev_img):
     img = grabber.grab()
     if cfg.mirror_strip:
@@ -153,6 +159,7 @@ class FrameProducer(threading.Thread):
     def run(self):
         cfg = self.cfg
         region = make_band_region(self.monitor, cfg.band_fraction)
+        lut = channel_lut(cfg.channel_max)
         prev_img = None
         try:
             grabber = GdiGrabber(region, cfg.pixel_count)
@@ -164,6 +171,8 @@ class FrameProducer(threading.Thread):
                 try:
                     img = sample_band(grabber, cfg, prev_img)
                     prev_img = img
+                    if lut:
+                        img = img.point(lut)
                     frame = build_frame(img.tobytes(), cfg.fill_mode)
                 except Exception:
                     # will fall on a lock screen or during a mode switch.

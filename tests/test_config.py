@@ -45,6 +45,16 @@ class ConfigTests(unittest.TestCase):
         self.write({"fill_mode": "none"})
         self.assertEqual(Config.load(self.path).fill_mode, "none")
 
+    def test_channel_max(self):
+        cfg = Config(channel_max=[255, 158, 131])
+        cfg.save(self.path)
+        self.assertEqual(Config.load(self.path).channel_max, [255, 158, 131])
+        for bad in ([255, 158], [255, 158, 300], [255, "158", 131], "abc",
+                    [255, 158, 131.0]):
+            self.write({"channel_max": bad})
+            self.assertEqual(Config.load(self.path).channel_max,
+                             [255, 255, 255], bad)
+
     def test_config_path_filename(self):
         self.assertEqual(os.path.basename(config_path()), CONFIG_FILENAME)
 

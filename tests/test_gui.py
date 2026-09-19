@@ -134,6 +134,10 @@ class GuiTests(unittest.TestCase):
         self.app._show(cfg)
         self.assertEqual(self.app._read(), cfg)
 
+    def test_channel_max_survives_the_widgets(self):
+        self.app.cfg.channel_max = [255, 158, 131]
+        self.assertEqual(self.app._read().channel_max, [255, 158, 131])
+
 
 if __name__ == "__main__":
     unittest.main()

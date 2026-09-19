@@ -247,6 +247,7 @@ class App(tk.Tk):
                 temporal_alpha=float(self.v_alpha.get()),
                 mirror_strip=self.v_mirror.get(),
                 fill_mode=FILL_MODES[max(self.cb_fill.current(), 0)],
+                channel_max=list(self.cfg.channel_max),
             )
         except ValueError:
             raise ValueError("One of the number fields is not valid.")
