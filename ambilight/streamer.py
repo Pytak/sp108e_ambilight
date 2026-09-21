@@ -2,11 +2,12 @@
 controller's acknowledgement. The slower of the two sets the frame rate."""
 
 import queue
+import socket
 import threading
 import time
 
 from .capture import FrameProducer, list_monitors
-from .protocol import connect, enter_preview, read_ack
+from .protocol import enter_preview, read_ack
 
 
 class Streamer(threading.Thread):
@@ -19,9 +20,17 @@ class Streamer(threading.Thread):
         self.fps = 0.0
         self.error = None
         self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._sock = None
 
     def stop(self):
         self._stop.set()
+        with self._lock:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
 
     def run(self):
         try:
@@ -38,8 +47,30 @@ class Streamer(threading.Thread):
         if not 0 <= cfg.monitor < len(monitors):
             raise RuntimeError(f"Monitor {cfg.monitor} not found.")
 
+        if self._stop.is_set():
+            return
+
         self.status = "Connecting"
-        sock = connect(cfg)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with self._lock:
+            self._sock = sock
+        try:
+            sock.settimeout(5.0)
+            sock.connect((cfg.controller_ip, cfg.controller_port))
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            sock.close()
+            with self._lock:
+                self._sock = None
+            if self._stop.is_set():
+                return
+            raise RuntimeError("Connection failed.")
+
+        if self._stop.is_set():
+            sock.close()
+            with self._lock:
+                self._sock = None
+            return
 
         producer = None
         try:
@@ -66,9 +97,10 @@ class Streamer(threading.Thread):
                 try:
                     sock.sendall(frame)
                 except OSError as e:
+                    if self._stop.is_set():
+                        return
                     raise RuntimeError(f"Send error: {e}")
 
-                # The ack paces the stream; its value is irrelevant.
                 read_ack(sock, timeout=0.5)
                 frame_count += 1
 
@@ -86,3 +118,5 @@ class Streamer(threading.Thread):
                 producer.stop()
                 producer.join(timeout=2)
             sock.close()
+            with self._lock:
+                self._sock = None

@@ -144,7 +144,7 @@ class App(tk.Tk):
             self.scale, self.ent_bright, self.btn_read, self.btn_set]
 
         strip = self._section(root, "Strip", 2)
-        self._spin(strip, 0, "Pixel count", self.v_pixels,
+        self._spin(strip, 0, "Frame width", self.v_pixels,
                    1, FRAME_PIXELS, 1)
         self._check(strip, 1, "Mirror strip (LEDs run right to left)",
                     self.v_mirror)
@@ -207,8 +207,19 @@ class App(tk.Tk):
     def _spin(self, parent, row, label, var, lo, hi, step):
         widget = ttk.Spinbox(parent, textvariable=var, from_=lo, to=hi,
                              increment=step, width=10)
+        widget.bind("<FocusOut>",
+                    lambda _e, v=var, a=lo, b=hi: self._clamp(v, a, b))
         self._row(parent, row, label, widget)
         self.inputs.append((widget, "normal"))
+
+    @staticmethod
+    def _clamp(var, lo, hi):
+        try:
+            n = type(lo)(var.get())
+        except (ValueError, TypeError):
+            var.set(str(lo))
+            return
+        var.set(str(max(lo, min(hi, n))))
 
     def _check(self, parent, row, text, var):
         widget = ttk.Checkbutton(parent, text=text, variable=var)
@@ -257,7 +268,7 @@ class App(tk.Tk):
         if not 1 <= cfg.controller_port <= 65535:
             raise ValueError("Port must be 1 to 65535.")
         if not 1 <= cfg.pixel_count <= FRAME_PIXELS:
-            raise ValueError(f"Pixel count must be 1 to {FRAME_PIXELS}.")
+            raise ValueError(f"Frame width must be 1 to {FRAME_PIXELS}.")
         if not 1 <= cfg.target_fps <= 240:
             raise ValueError("Target FPS must be 1 to 240.")
         if cfg.monitor < 0:
