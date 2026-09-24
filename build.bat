@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo Installing build dependencies...
-python -m pip install --quiet pyinstaller mss Pillow
+python -m pip install --quiet pyinstaller Pillow dxcam==0.3.0
 if errorlevel 1 goto :fail
 
 echo Building SP108E_Ambilight.exe...
@@ -11,7 +11,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed ^
     --name SP108E_Ambilight ^
     --icon icon.ico ^
     --add-data "icon.ico;." ^
-    --hidden-import mss.windows ^
+    --collect-submodules dxcam ^
     sp108e_ambilight_gui.py
 if errorlevel 1 goto :fail
 

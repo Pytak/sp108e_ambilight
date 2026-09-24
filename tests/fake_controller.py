@@ -1,13 +1,10 @@
-"""A fake SP108E on localhost: status, brightness, pixels per segment,
-segments, and the preview mode with one ack per frame."""
-
 import socket
 import threading
 
 from ambilight.config import Config
 from ambilight import protocol as p
 
-# Status of the user's controller: brightness 38, order 2, 78 px x 2 segments.
+# real controller status: brightness 38, 78 pixels x 2 segments
 REAL_STATUS = bytes.fromhex("38 01 d3 d3 26 02 00 4e 00 02 55 00 ff 03 08 00 83")
 
 

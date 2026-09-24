@@ -1,14 +1,3 @@
-"""SP108E protocol.
-
-A command is 6 bytes: 0x38, three data bytes, the command, 0x83. 16-bit
-values in commands are little-endian; in the status reply they are
-big-endian. A 5-byte packet is ignored without an error. An out-of-range
-value resets pixels per segment and segments to 60 and 10.
-
-During a preview stream, send frames only. Any other command ends the
-preview mode and the strip goes erratic.
-"""
-
 import socket
 import time
 
@@ -25,9 +14,8 @@ STATUS_SIZE = 17
 ACK_BYTE = 0x31
 
 
-# ---- packets ---------------------------------------------------------------
-
 def make_packet(cmd, data=b'\x00\x00\x00'):
+    # wrong length packets are ignored silently
     return bytes([CMD_FRAME_START]) + data + bytes([cmd, CMD_FRAME_END])
 
 
@@ -81,12 +69,13 @@ def set_brightness(sock, value):
 
 
 def _u16_packet(cmd, value):
+    # an out of range value will reset the counts to 60 pixels x 10 segments
     value = max(0, min(0xFFFF, int(value)))
     return make_packet(cmd, bytes([value & 0xFF, value >> 8, 0x00]))
 
 
 def drain(sock, timeout=0.3):
-    # Stray bytes would corrupt the next status read.
+    # leftover bytes would be read as part of the next status reply
     sock.settimeout(timeout)
     try:
         while sock.recv(64):
@@ -104,11 +93,10 @@ def set_segments(sock, segments):
 
 
 def enter_preview(sock):
+    # after this, only frames are allowed; other commands cause erratic output
     sock.sendall(make_packet(CMD_CUSTOM_PREVIEW))
     return read_ack(sock)
 
-
-# ---- connections -----------------------------------------------------------
 
 def connect(cfg, timeout=5.0):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -135,8 +123,7 @@ def read_settings(cfg):
 
 def write_settings(cfg, pixels_per_segment=None, segments=None,
                    brightness=None):
-    """Each value costs one flash write in the controller. Pass changed
-    values only. Call only while the stream is stopped."""
+    # each value is a flash write: send changes only, and never mid stream
     sock = connect(cfg)
     try:
         if pixels_per_segment is not None:
@@ -156,8 +143,6 @@ def write_settings(cfg, pixels_per_segment=None, segments=None,
         raise RuntimeError("Status read failed after the write.")
     return status
 
-
-# ---- preview frames --------------------------------------------------------
 
 def build_frame(rgb, fill_mode):
     data = bytes(rgb)

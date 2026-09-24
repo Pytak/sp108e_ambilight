@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""SP108E Ambilight, console version. Same settings file as the GUI."""
-
 import os
 import sys
 import time
 
 try:
-    import mss  # noqa: F401
+    import dxcam  # noqa: F401
     import PIL  # noqa: F401
 except ImportError:
-    print("pip install mss Pillow")
+    print("pip install Pillow dxcam==0.3.0")
     sys.exit(1)
 
 from ambilight.config import Config, config_path

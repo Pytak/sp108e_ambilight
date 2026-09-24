@@ -11,21 +11,20 @@ FILL_MODES = ("repeat", "mirror", "none")
 class Config:
     controller_ip: str = "192.168.1.235"
     controller_port: int = 8189
-    # LEDs that show the screen, from the start of the strip. Max 300.
+    # leds used for the screen, from the start of the strip
     pixel_count: int = 175
-    # Frame rate cap.
     target_fps: int = 30
-    # mss monitor index. 0 = all monitors.
-    monitor: int = 0
-    # Gaussian blur along the strip, in LEDs. 0 = off.
+    # number in the monitor list, from 1
+    monitor: int = 1
+    # gaussian blur along the strip, in leds, 0 = off
     smooth_radius: float = 5.0
-    # Weight of the new frame when blended with the last one. 1.0 = off.
+    # new frame weight in the blend, 1 = off
     temporal_alpha: float = 0.1
-    # For strips that run right to left.
+    # for strips wired right to left
     mirror_strip: bool = True
-    # Fill after pixel_count: repeat, mirror or none (black).
+    # led content after pixel_count
     fill_mode: str = "mirror"
-    # White balance: max output per channel (R, G, B).
+    # white balance: max output of r, g, b
     channel_max: list = field(default_factory=lambda: [255, 255, 255])
 
     @classmethod
@@ -51,6 +50,8 @@ class Config:
                 clean[key] = types[key](value)
             except (TypeError, ValueError):
                 pass
+        if clean.get("monitor", 1) < 1:
+            clean.pop("monitor")
         if clean.get("fill_mode") not in FILL_MODES:
             clean.pop("fill_mode", None)
         cm = clean.get("channel_max")
@@ -69,6 +70,6 @@ def config_path():
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
-        # sys.argv[0] is the entry script, so the file sits next to it.
+        # same directory as the entry script
         base = os.path.dirname(os.path.abspath(sys.argv[0]))
     return os.path.join(base, CONFIG_FILENAME)

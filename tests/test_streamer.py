@@ -6,9 +6,8 @@ from ambilight.streamer import Streamer
 from tests.fake_controller import FakeController
 
 
+# a desktop session is necessary for the stream test
 class StreamerTests(unittest.TestCase):
-    """The stream test needs a desktop session for the screen capture."""
-
     def test_connection_refused(self):
         st = Streamer(Config(controller_ip="127.0.0.1", controller_port=9))
         st.start()
@@ -17,10 +16,11 @@ class StreamerTests(unittest.TestCase):
         self.assertEqual(st.status, "Stopped")
 
     def test_bad_monitor(self):
-        st = Streamer(Config(monitor=99))
-        st.start()
-        st.join(10)
-        self.assertEqual(st.error, "Monitor 99 not found.")
+        for monitor in (0, 99):
+            st = Streamer(Config(monitor=monitor))
+            st.start()
+            st.join(10)
+            self.assertEqual(st.error, f"Monitor {monitor} not found.")
 
     def test_preview_refused(self):
         fc = FakeController(silent=True)

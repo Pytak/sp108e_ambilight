@@ -55,6 +55,12 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(Config.load(self.path).channel_max,
                              [255, 255, 255], bad)
 
+    def test_invalid_monitor_falls_back(self):
+        self.write({"monitor": 0})
+        self.assertEqual(Config.load(self.path).monitor, 1)
+        self.write({"monitor": 2})
+        self.assertEqual(Config.load(self.path).monitor, 2)
+
     def test_config_path_filename(self):
         self.assertEqual(os.path.basename(config_path()), CONFIG_FILENAME)
 

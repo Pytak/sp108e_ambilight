@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""SP108E Ambilight, desktop GUI."""
-
 import ctypes
 import os
 import queue
@@ -28,16 +26,14 @@ def enable_dpi_awareness():
 
 
 def resource_path(name):
-    # PyInstaller unpacks bundled files to sys._MEIPASS.
+    # location of bundled files in a pyinstaller build
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
 
-def monitor_label(index, mon):
-    size = f"{mon['width']}x{mon['height']}"
-    if index == 0:
-        return f"All monitors ({size})"
-    return f"Monitor {index} ({size} at {mon['left']},{mon['top']})"
+def monitor_label(number, mon):
+    return (f"Monitor {number} ({mon['width']}x{mon['height']} "
+            f"at {mon['left']},{mon['top']})")
 
 
 class App(tk.Tk):
@@ -70,8 +66,6 @@ class App(tk.Tk):
             self.after_cancel(timer)
         super().destroy()
 
-    # ---- layout ---------------------------------------------------------
-
     def _build(self):
         root = ttk.Frame(self, padding=10)
         root.grid(sticky="nsew")
@@ -90,7 +84,7 @@ class App(tk.Tk):
         self._spin(conn, 1, "Port", self.v_port, 1, 65535, 1)
 
         ctl = self._section(root, "Controller Settings", 1)
-        # Guards the two-way sync between the brightness slider and box.
+        # true during the brightness slider and box sync
         self._syncing = False
         self.v_seg_pixels = tk.StringVar()
         self.v_segments = tk.StringVar()
@@ -157,7 +151,8 @@ class App(tk.Tk):
         cap = self._section(root, "Capture", 3)
         self.cb_monitor = ttk.Combobox(
             cap, state="readonly", width=36,
-            values=[monitor_label(i, m) for i, m in enumerate(self.monitors)])
+            values=[monitor_label(i, m)
+                    for i, m in enumerate(self.monitors, start=1)])
         self._row(cap, 0, "Monitor", self.cb_monitor)
         self.inputs.append((self.cb_monitor, "readonly"))
         self._spin(cap, 1, "Target FPS", self.v_fps, 1, 240, 1)
@@ -238,8 +233,6 @@ class App(tk.Tk):
         for widget, active_state in self.inputs:
             widget.configure(state=active_state if enabled else "disabled")
 
-    # ---- config <-> widgets --------------------------------------------
-
     def _show(self, cfg):
         self.v_ip.set(cfg.controller_ip)
         self.v_port.set(str(cfg.controller_port))
@@ -251,8 +244,8 @@ class App(tk.Tk):
         for var, value in zip(self.v_white, cfg.channel_max):
             var.set(str(value))
         self.cb_fill.current(FILL_MODES.index(cfg.fill_mode))
-        index = cfg.monitor if 0 <= cfg.monitor < len(self.monitors) else 0
-        self.cb_monitor.current(index)
+        if 1 <= cfg.monitor <= len(self.monitors):
+            self.cb_monitor.current(cfg.monitor - 1)
 
     def _read(self):
         try:
@@ -261,7 +254,7 @@ class App(tk.Tk):
                 controller_port=int(self.v_port.get()),
                 pixel_count=int(self.v_pixels.get()),
                 target_fps=int(self.v_fps.get()),
-                monitor=self.cb_monitor.current(),
+                monitor=self.cb_monitor.current() + 1,
                 smooth_radius=float(self.v_radius.get()),
                 temporal_alpha=float(self.v_alpha.get()),
                 mirror_strip=self.v_mirror.get(),
@@ -279,7 +272,7 @@ class App(tk.Tk):
             raise ValueError(f"Frame width must be 1 to {FRAME_PIXELS}.")
         if not 1 <= cfg.target_fps <= 240:
             raise ValueError("Target FPS must be 1 to 240.")
-        if cfg.monitor < 0:
+        if cfg.monitor < 1:
             raise ValueError("Select a monitor.")
         if cfg.smooth_radius < 0:
             raise ValueError("Blur radius must be 0 or more.")
@@ -296,8 +289,6 @@ class App(tk.Tk):
             messagebox.showwarning(
                 "Settings not saved",
                 f"Cannot write {self.config_path}\n\n{e}")
-
-    # ---- controller settings -------------------------------------------
 
     def _show_brightness(self, value):
         self._syncing = True
@@ -429,8 +420,6 @@ class App(tk.Tk):
                 self.v_status.set(payload)
             streaming = self.streamer is not None and self.streamer.is_alive()
             self._set_controller_controls(not streaming)
-
-    # ---- start / stop --------------------------------------------------
 
     def _toggle(self):
         if self.streamer is not None and self.streamer.is_alive():

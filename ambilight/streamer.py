@@ -1,6 +1,3 @@
-"""Capture runs in its own thread, parallel to the wait for the
-controller's acknowledgement. The slower of the two sets the frame rate."""
-
 import queue
 import socket
 import threading
@@ -11,7 +8,7 @@ from .protocol import enter_preview, read_ack
 
 
 class Streamer(threading.Thread):
-    """status, fps and error are safe to read from other threads."""
+    # status, fps and error can be read from other threads
 
     def __init__(self, cfg):
         super().__init__(daemon=True)
@@ -36,8 +33,7 @@ class Streamer(threading.Thread):
         try:
             self._run()
         except Exception as e:
-            # stop() closes the socket under the running thread, so any
-            # call on it can fail after a stop.
+            # ignore socket closed errors after stopping
             if not self._stop.is_set():
                 self.error = str(e)
         finally:
@@ -47,7 +43,7 @@ class Streamer(threading.Thread):
     def _run(self):
         cfg = self.cfg
         monitors = list_monitors()
-        if not 0 <= cfg.monitor < len(monitors):
+        if not 1 <= cfg.monitor <= len(monitors):
             raise RuntimeError(f"Monitor {cfg.monitor} not found.")
 
         if self._stop.is_set():
@@ -79,7 +75,7 @@ class Streamer(threading.Thread):
                 raise RuntimeError(
                     "Preview init failed. Power-cycle the controller and retry.")
 
-            producer = FrameProducer(monitors[cfg.monitor], cfg)
+            producer = FrameProducer(monitors[cfg.monitor - 1], cfg)
             producer.start()
             self.status = "Streaming"
 

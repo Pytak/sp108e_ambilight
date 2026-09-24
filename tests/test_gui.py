@@ -1,5 +1,3 @@
-"""GUI tests with the network calls replaced. They open a hidden window."""
-
 import time
 import unittest
 

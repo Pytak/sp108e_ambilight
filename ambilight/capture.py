@@ -1,119 +1,67 @@
-import ctypes
 import queue
 import threading
 import time
-from ctypes import wintypes
 
-import mss
+import numpy as np
 from PIL import Image, ImageFilter
 
 from .protocol import build_frame
 
+# 270: max error within 3/255, used to reduce cpu time
+_SAMPLE_ROWS = 270
+
+
+def _import_dxcam():
+    # dpi awareness is set during the import, it must follow the gui setup
+    import dxcam
+    from dxcam.core.dxgi_duplicator import DXGIDuplicator
+
+    def release(self):
+        # release on garbage collection only to prevent a double release
+        if self.duplicator is not None:
+            self.release_frame()
+            self.duplicator = None
+
+    DXGIDuplicator.release = release
+    return dxcam
+
 
 def list_monitors():
-    with mss.MSS() as sct:
-        return list(sct.monitors)
+    factory = getattr(_import_dxcam(), "__factory")
+    monitors = []
+    for d, outputs in enumerate(factory.outputs):
+        for o, output in enumerate(outputs):
+            output.update_desc()
+            r = output.desc.DesktopCoordinates
+            monitors.append({"device": d, "output": o, "left": r.left,
+                             "top": r.top, "width": r.right - r.left,
+                             "height": r.bottom - r.top})
+    return monitors
 
 
-# ---- GDI -------------------------------------------------------------------
-
-_user32 = ctypes.WinDLL("user32")
-_gdi32 = ctypes.WinDLL("gdi32")
-_user32.GetDC.restype = ctypes.c_void_p
-_user32.GetDC.argtypes = [ctypes.c_void_p]
-_user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
-_gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
-_gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
-_gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int,
-                                          ctypes.c_int]
-_gdi32.SelectObject.restype = ctypes.c_void_p
-_gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
-_gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
-_gdi32.SetStretchBltMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_gdi32.SetBrushOrgEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
-                                 ctypes.c_int, ctypes.c_void_p]
-_gdi32.StretchBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
-                              ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
-                              ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                              ctypes.c_int, wintypes.DWORD]
-_gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                             wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
-                             ctypes.c_void_p, wintypes.UINT]
-
-_SRCCOPY = 0x00CC0020
-_HALFTONE = 4
-
-
-class _BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
-                ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD),
-                ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD),
-                ("biXPelsPerMeter", wintypes.LONG),
-                ("biYPelsPerMeter", wintypes.LONG),
-                ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD)]
-
-
-class _BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", _BITMAPINFOHEADER),
-                ("bmiColors", wintypes.DWORD * 3)]
-
-
-class GdiGrabber:
-    """HALFTONE makes GDI average the source pixels, so the downscale to
-    width x 1 happens inside the copy."""
-
-    def __init__(self, region, width):
-        self.region = region
+class DxgiGrabber:
+    def __init__(self, monitor, width):
         self.width = width
-        self.src = _user32.GetDC(None)
-        self.mem = _gdi32.CreateCompatibleDC(self.src)
-        self.bmp = _gdi32.CreateCompatibleBitmap(self.src, width, 1)
-        if not (self.src and self.mem and self.bmp):
-            self.close()
-            raise RuntimeError("GDI initialisation failed.")
-        _gdi32.SelectObject(self.mem, self.bmp)
-        _gdi32.SetStretchBltMode(self.mem, _HALFTONE)
-        _gdi32.SetBrushOrgEx(self.mem, 0, 0, None)
-        self.bmi = _BITMAPINFO()
-        header = self.bmi.bmiHeader
-        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        header.biWidth = width
-        header.biHeight = -1
-        header.biPlanes = 1
-        header.biBitCount = 32
-        self.buf = ctypes.create_string_buffer(width * 4)
+        self.averages = None
+        self.camera = _import_dxcam().create(device_idx=monitor["device"],
+                                             output_idx=monitor["output"],
+                                             output_color="BGRA")
 
     def grab(self):
-        r = self.region
-        ok = _gdi32.StretchBlt(self.mem, 0, 0, self.width, 1, self.src,
-                               r["left"], r["top"], r["width"], r["height"],
-                               _SRCCOPY)
-        if not ok:
-            raise RuntimeError("StretchBlt failed.")
-        lines = _gdi32.GetDIBits(self.mem, self.bmp, 0, 1, self.buf,
-                                 ctypes.byref(self.bmi), 0)
-        if lines != 1:
-            raise RuntimeError("GetDIBits failed.")
-        return Image.frombytes("RGB", (self.width, 1), self.buf.raw,
-                               "raw", "BGRX")
+        frame = self.camera.grab(copy=False)
+        if frame is not None:
+            step = max(1, frame.shape[0] // _SAMPLE_ROWS)
+            # bgra to rgb
+            self.averages = frame[::step, :, 2::-1].mean(axis=0,
+                                                          dtype=np.float32)
+        if self.averages is None:
+            raise RuntimeError("No desktop frame yet.")
+        img = Image.fromarray(self.averages.astype(np.uint8)[np.newaxis])
+        return img.resize((self.width, 1), Image.Resampling.BOX)
 
     def close(self):
-        # Also called from a half-finished __init__.
-        if getattr(self, "bmp", None):
-            _gdi32.DeleteObject(self.bmp)
-        if getattr(self, "mem", None):
-            _gdi32.DeleteDC(self.mem)
-        if getattr(self, "src", None):
-            _user32.ReleaseDC(None, self.src)
-        self.bmp = self.mem = self.src = None
+        self.camera.release()
 
-
-# ---- processing ------------------------------------------------------------
 
 def channel_lut(channel_max):
     if list(channel_max) == [255, 255, 255]:
@@ -133,8 +81,6 @@ def sample_screen(grabber, cfg, prev_img):
 
 
 class FrameProducer(threading.Thread):
-    """Keeps only the newest frame."""
-
     def __init__(self, monitor, cfg):
         super().__init__(daemon=True)
         self.monitor = monitor
@@ -150,12 +96,14 @@ class FrameProducer(threading.Thread):
         lut = channel_lut(cfg.channel_max)
         prev_img = None
         try:
-            grabber = GdiGrabber(self.monitor, cfg.pixel_count)
+            grabber = DxgiGrabber(self.monitor, cfg.pixel_count)
         except Exception as e:
             self.error = f"Screen capture failed: {e}"
             return
+        interval = 1.0 / cfg.target_fps
         try:
             while not self.stop_event.is_set():
+                start = time.perf_counter()
                 try:
                     img = sample_screen(grabber, cfg, prev_img)
                     prev_img = img
@@ -163,12 +111,13 @@ class FrameProducer(threading.Thread):
                         img = img.point(lut)
                     frame = build_frame(img.tobytes(), cfg.fill_mode)
                 except Exception:
-                    # will fall on a lock screen or during a mode switch.
+                    # expected on the lock screen and during a mode switch
                     time.sleep(0.01)
                     continue
                 with self._lock:
                     self._frame = frame
                     self._ready.set()
+                self.stop_event.wait(interval - (time.perf_counter() - start))
         finally:
             grabber.close()
 

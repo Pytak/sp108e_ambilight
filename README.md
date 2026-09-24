@@ -32,7 +32,7 @@ Settings are saved to `sp108e_ambilight.json` next to the exe whenever you start
 | Pixel count                     | `pixel_count`     | `175`             | How many LEDs, counted from the start of the strip, display the screen. The rest are filled (see below). Maximum 300. This is independent of the pixel and segment counts in the phone app. |
 | Mirror strip                    | `mirror_strip`    | `true`            | Turn on for strips that run right-to-left relative to the screen.                                                                                                                           |
 | Fill the rest of the strip with | `fill_mode`       | `mirror`          | What to do with LEDs past the pixel count: `repeat` repeats the frame, `mirror` repeats it mirrored, `none` leaves them black.                                                              |
-| Monitor                         | `monitor`         | `0`               | Which screen to capture. `0` treats all monitors as one wide virtual desktop; `1`, `2`, ... to a single physical monitor.                                                                   |
+| Monitor                         | `monitor`         | `1`               | Which monitor to capture, as numbered in the monitor list.                                                                                                                                  |
 | Target FPS                      | `target_fps`      | `30`              | Local capture frame rate cap.                                                                                                                                                               |
 | Blur radius                     | `smooth_radius`   | `5`               | Gaussian blur along the strip, measured in LEDs. `0` to disable it.                                                                                                                         |
 | Temporal alpha                  | `temporal_alpha`  | `0.1`             | Transparency of the previous frame on top of the new one. `1.0` turns blending off.                                                                                                         |
@@ -63,7 +63,7 @@ Python 3.9 or newer is required to build. The result is a single exe file.
 1. Clone or download the repository.
 2. Run `build.bat`.
 
-The script installs PyInstaller, mss and Pillow if they're missing, then produces `dist\SP108E_Ambilight.exe`. The settings file is created in the same directory as the executable.
+The script installs PyInstaller, Pillow and dxcam if they're missing, then produces `dist\SP108E_Ambilight.exe`. The settings file is created in the same directory as the executable.
 
 A few things worth knowing:
 
@@ -73,7 +73,7 @@ A few things worth knowing:
 ## Tests
 
 ```
-pip install mss Pillow
+pip install Pillow dxcam==0.3.0
 python -m unittest
 ```
 
@@ -82,7 +82,7 @@ Tests run against a mock controller on localhost. A few windows will open and cl
 ## Console version
 
 ```
-pip install mss Pillow
+pip install Pillow dxcam==0.3.0
 python sp108e_ambilight.py
 ```
 
@@ -96,7 +96,7 @@ Uses the same settings file as the GUI app, prints the frame rate every 5 second
 | `sp108e_ambilight.py`     | The console version                                 |
 | `ambilight/config.py`     | Settings and their JSON file                        |
 | `ambilight/protocol.py`   | SP108E commands, status, brightness, preview frames |
-| `ambilight/capture.py`    | Monitor list, GDI grabber, capture thread           |
+| `ambilight/capture.py`    | Monitor list, DXGI grabber, capture thread          |
 | `ambilight/streamer.py`   | The stream thread that feeds the controller         |
 | `icon.ico`                | Icon of the exe and the window                      |
 | `build.bat`               | PyInstaller build                                   |
@@ -108,7 +108,7 @@ Uses the same settings file as the GUI app, prints the frame rate every 5 second
 
 For each frame:
 
-1. A GDI `StretchBlt` in HALFTONE mode captures the screen in a background thread. It averages the source pixels belonging to each LED during the copy, so the screen is already downscaled to the pixel count by the time Python sees it. Each LED ends up with the average of its share of the screen.
+1. A background thread captures the screen with DXGI Desktop Duplication (through dxcam), at the target FPS. The image comes from the GPU, so the capture does not slow down the desktop, and the mouse pointer is not in it. Each screen column is averaged over every n-th row (270 rows in total), then the columns are averaged down to the frame width. Each LED ends up with the average of its share of the screen.
 2. The strip is mirrored if needed.
 3. A Gaussian blur is applied along the strip.
 4. The result is blended with the previous frame.
@@ -143,6 +143,8 @@ Errors show up in red on the status line.
 
 **Wrong colors**: set the color order (RGB, GRB, ...) in the SP108E app. The app always sends RGB. If the colors are right but the white balance is off, use **White balance** (see [color calibration](#color-calibration)).
 
-**Low FPS**: the controller's acknowledgement is usually the bottleneck. If capture is the limit, capture a single monitor instead of all monitors.
+**Low FPS**: the controller's acknowledgement is usually the bottleneck.
+
+**Screen capture failed**: DXGI Desktop Duplication is not available, for example in a remote desktop session.
 
 **Settings not saved**: the folder is read-only. Move the exe somewhere writable, like your Desktop or Documents.
