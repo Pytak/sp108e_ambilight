@@ -26,7 +26,7 @@ def main():
     print(f"Settings: {path}")
     print(f"pixels={cfg.pixel_count}  blur={cfg.smooth_radius}  "
           f"alpha={cfg.temporal_alpha}  fps_cap={cfg.target_fps}  "
-          f"band={cfg.band_fraction * 100:.1f}%  monitor={cfg.monitor}")
+          f"monitor={cfg.monitor}")
 
     streamer = Streamer(cfg)
     streamer.start()

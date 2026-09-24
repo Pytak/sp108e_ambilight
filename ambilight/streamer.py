@@ -36,7 +36,10 @@ class Streamer(threading.Thread):
         try:
             self._run()
         except Exception as e:
-            self.error = str(e)
+            # stop() closes the socket under the running thread, so any
+            # call on it can fail after a stop.
+            if not self._stop.is_set():
+                self.error = str(e)
         finally:
             self.status = "Stopped"
             self.fps = 0.0
@@ -62,8 +65,6 @@ class Streamer(threading.Thread):
             sock.close()
             with self._lock:
                 self._sock = None
-            if self._stop.is_set():
-                return
             raise RuntimeError("Connection failed.")
 
         if self._stop.is_set():
@@ -97,8 +98,6 @@ class Streamer(threading.Thread):
                 try:
                     sock.sendall(frame)
                 except OSError as e:
-                    if self._stop.is_set():
-                        return
                     raise RuntimeError(f"Send error: {e}")
 
                 read_ack(sock, timeout=0.5)

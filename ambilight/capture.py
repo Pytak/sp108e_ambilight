@@ -15,17 +15,6 @@ def list_monitors():
         return list(sct.monitors)
 
 
-def make_band_region(monitor, band_fraction):
-    band_h = max(1, int(monitor["height"] * band_fraction))
-    top = monitor["top"] + (monitor["height"] - band_h) // 2
-    return {
-        "top":    top,
-        "left":   monitor["left"],
-        "width":  monitor["width"],
-        "height": band_h,
-    }
-
-
 # ---- GDI -------------------------------------------------------------------
 
 _user32 = ctypes.WinDLL("user32")
@@ -132,7 +121,7 @@ def channel_lut(channel_max):
     return [round(i * m / 255) for m in channel_max for i in range(256)]
 
 
-def sample_band(grabber, cfg, prev_img):
+def sample_screen(grabber, cfg, prev_img):
     img = grabber.grab()
     if cfg.mirror_strip:
         img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
@@ -158,18 +147,17 @@ class FrameProducer(threading.Thread):
 
     def run(self):
         cfg = self.cfg
-        region = make_band_region(self.monitor, cfg.band_fraction)
         lut = channel_lut(cfg.channel_max)
         prev_img = None
         try:
-            grabber = GdiGrabber(region, cfg.pixel_count)
+            grabber = GdiGrabber(self.monitor, cfg.pixel_count)
         except Exception as e:
             self.error = f"Screen capture failed: {e}"
             return
         try:
             while not self.stop_event.is_set():
                 try:
-                    img = sample_band(grabber, cfg, prev_img)
+                    img = sample_screen(grabber, cfg, prev_img)
                     prev_img = img
                     if lut:
                         img = img.point(lut)

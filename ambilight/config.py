@@ -11,14 +11,12 @@ FILL_MODES = ("repeat", "mirror", "none")
 class Config:
     controller_ip: str = "192.168.1.235"
     controller_port: int = 8189
-    # LEDs that show the screen band, from the start of the strip. Max 300.
+    # LEDs that show the screen, from the start of the strip. Max 300.
     pixel_count: int = 175
     # Frame rate cap.
     target_fps: int = 30
     # mss monitor index. 0 = all monitors.
     monitor: int = 0
-    # Height of the sampled band, fraction of the screen height.
-    band_fraction: float = 0.03
     # Gaussian blur along the strip, in LEDs. 0 = off.
     smooth_radius: float = 5.0
     # Weight of the new frame when blended with the last one. 1.0 = off.
@@ -27,7 +25,7 @@ class Config:
     mirror_strip: bool = True
     # Fill after pixel_count: repeat, mirror or none (black).
     fill_mode: str = "mirror"
-    # Color calibration, JSON only: max output per channel (R, G, B).
+    # White balance: max output per channel (R, G, B).
     channel_max: list = field(default_factory=lambda: [255, 255, 255])
 
     @classmethod

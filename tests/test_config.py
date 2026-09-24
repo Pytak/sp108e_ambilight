@@ -15,7 +15,7 @@ class ConfigTests(unittest.TestCase):
             f.write(data if isinstance(data, str) else json.dumps(data))
 
     def test_round_trip(self):
-        cfg = Config(controller_ip="1.2.3.4", pixel_count=12, band_fraction=0.5,
+        cfg = Config(controller_ip="1.2.3.4", pixel_count=12,
                      mirror_strip=False, fill_mode="repeat")
         cfg.save(self.path)
         self.assertEqual(Config.load(self.path), cfg)

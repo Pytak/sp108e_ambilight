@@ -80,10 +80,10 @@ class App(tk.Tk):
         self.v_port = tk.StringVar()
         self.v_pixels = tk.StringVar()
         self.v_fps = tk.StringVar()
-        self.v_band = tk.StringVar()
         self.v_radius = tk.StringVar()
         self.v_alpha = tk.StringVar()
         self.v_mirror = tk.BooleanVar()
+        self.v_white = [tk.StringVar() for _ in range(3)]
 
         conn = self._section(root, "Controller", 0)
         self._entry(conn, 0, "IP address", self.v_ip)
@@ -160,14 +160,18 @@ class App(tk.Tk):
             values=[monitor_label(i, m) for i, m in enumerate(self.monitors)])
         self._row(cap, 0, "Monitor", self.cb_monitor)
         self.inputs.append((self.cb_monitor, "readonly"))
-        self._spin(cap, 1, "Band height (% of screen)", self.v_band, 1, 100, 1)
-        self._spin(cap, 2, "Target FPS", self.v_fps, 1, 240, 1)
+        self._spin(cap, 1, "Target FPS", self.v_fps, 1, 240, 1)
 
-        smooth = self._section(root, "Smoothing", 4)
-        self._spin(smooth, 0, "Blur radius (LEDs, 0 to disable)",
+        behavior = self._section(root, "Behavior", 4)
+        self._spin(behavior, 0, "Blur radius (LEDs, 0 to disable)",
                    self.v_radius, 0, 100, 0.5)
-        self._spin(smooth, 1, "Temporal alpha (1.0 to disable)",
+        self._spin(behavior, 1, "Temporal alpha (1.0 to disable)",
                    self.v_alpha, 0.01, 1.0, 0.05)
+        white = ttk.Frame(behavior)
+        for col, var in enumerate(self.v_white):
+            self._make_spin(white, var, 0, 255, 1, 5).grid(
+                row=0, column=col, padx=(0 if col == 0 else 6, 0))
+        self._row(behavior, 2, "White balance (R, G, B)", white)
 
         bottom = ttk.Frame(root)
         bottom.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -204,13 +208,17 @@ class App(tk.Tk):
         self._row(parent, row, label, widget)
         self.inputs.append((widget, "normal"))
 
-    def _spin(self, parent, row, label, var, lo, hi, step):
+    def _make_spin(self, parent, var, lo, hi, step, width):
         widget = ttk.Spinbox(parent, textvariable=var, from_=lo, to=hi,
-                             increment=step, width=10)
+                             increment=step, width=width)
         widget.bind("<FocusOut>",
                     lambda _e, v=var, a=lo, b=hi: self._clamp(v, a, b))
-        self._row(parent, row, label, widget)
         self.inputs.append((widget, "normal"))
+        return widget
+
+    def _spin(self, parent, row, label, var, lo, hi, step):
+        self._row(parent, row, label,
+                  self._make_spin(parent, var, lo, hi, step, 10))
 
     @staticmethod
     def _clamp(var, lo, hi):
@@ -237,10 +245,11 @@ class App(tk.Tk):
         self.v_port.set(str(cfg.controller_port))
         self.v_pixels.set(str(cfg.pixel_count))
         self.v_fps.set(str(cfg.target_fps))
-        self.v_band.set(f"{cfg.band_fraction * 100:g}")
         self.v_radius.set(f"{cfg.smooth_radius:g}")
         self.v_alpha.set(f"{cfg.temporal_alpha:g}")
         self.v_mirror.set(cfg.mirror_strip)
+        for var, value in zip(self.v_white, cfg.channel_max):
+            var.set(str(value))
         self.cb_fill.current(FILL_MODES.index(cfg.fill_mode))
         index = cfg.monitor if 0 <= cfg.monitor < len(self.monitors) else 0
         self.cb_monitor.current(index)
@@ -253,12 +262,11 @@ class App(tk.Tk):
                 pixel_count=int(self.v_pixels.get()),
                 target_fps=int(self.v_fps.get()),
                 monitor=self.cb_monitor.current(),
-                band_fraction=float(self.v_band.get()) / 100.0,
                 smooth_radius=float(self.v_radius.get()),
                 temporal_alpha=float(self.v_alpha.get()),
                 mirror_strip=self.v_mirror.get(),
                 fill_mode=FILL_MODES[max(self.cb_fill.current(), 0)],
-                channel_max=list(self.cfg.channel_max),
+                channel_max=[int(v.get()) for v in self.v_white],
             )
         except ValueError:
             raise ValueError("One of the number fields is not valid.")
@@ -273,12 +281,12 @@ class App(tk.Tk):
             raise ValueError("Target FPS must be 1 to 240.")
         if cfg.monitor < 0:
             raise ValueError("Select a monitor.")
-        if not 0 < cfg.band_fraction <= 1:
-            raise ValueError("Band height must be 1 to 100 percent.")
         if cfg.smooth_radius < 0:
             raise ValueError("Blur radius must be 0 or more.")
         if not 0 < cfg.temporal_alpha <= 1:
             raise ValueError("Temporal alpha must be more than 0 and at most 1.")
+        if not all(0 <= v <= 255 for v in cfg.channel_max):
+            raise ValueError("White balance values must be 0 to 255.")
         return cfg
 
     def _save(self, cfg):

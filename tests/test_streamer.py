@@ -32,10 +32,23 @@ class StreamerTests(unittest.TestCase):
         finally:
             fc.close()
 
+    def test_error_after_stop_is_ignored(self):
+        st = Streamer(Config())
+
+        def closed_socket():
+            st.stop()
+            raise OSError(10038, "not a socket")
+
+        st._run = closed_socket
+        st.start()
+        st.join(5)
+        self.assertIsNone(st.error)
+        self.assertEqual(st.status, "Stopped")
+
     def test_full_stream_against_fake_controller(self):
         fc = FakeController()
         try:
-            st = Streamer(fc.cfg(target_fps=60, band_fraction=0.1))
+            st = Streamer(fc.cfg(target_fps=60))
             st.start()
             time.sleep(2.0)
             self.assertEqual(st.status, "Streaming")

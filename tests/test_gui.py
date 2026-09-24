@@ -134,9 +134,16 @@ class GuiTests(unittest.TestCase):
         self.app._show(cfg)
         self.assertEqual(self.app._read(), cfg)
 
-    def test_channel_max_survives_the_widgets(self):
-        self.app.cfg.channel_max = [255, 158, 131]
+    def test_white_balance_widgets(self):
+        cfg = self.app._read()
+        cfg.channel_max = [255, 158, 131]
+        self.app._show(cfg)
+        self.assertEqual([v.get() for v in self.app.v_white],
+                         ["255", "158", "131"])
         self.assertEqual(self.app._read().channel_max, [255, 158, 131])
+        self.app.v_white[1].set("256")
+        with self.assertRaises(ValueError):
+            self.app._read()
 
 
 if __name__ == "__main__":
